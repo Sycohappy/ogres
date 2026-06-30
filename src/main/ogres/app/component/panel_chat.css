@@ -1,0 +1,129 @@
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.chat-empty {
+  color: var(--color-black-500);
+  font-size: 14px;
+  line-height: 1.4;
+  margin: 0;
+  text-align: center;
+}
+
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.chat-message {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 10px 1fr;
+
+  &[data-whisper="true"] {
+    .chat-message-content {
+      background-color: var(--color-paper-900);
+      border-left: 3px solid var(--color-blues-500);
+    }
+  }
+
+  &[data-outgoing="true"] .chat-message-content {
+    background-color: var(--color-blues-100);
+  }
+}
+
+.chat-message-dot {
+  align-self: start;
+  background-color: var(--color-blues-500);
+  border-radius: 50%;
+  height: 10px;
+  margin-top: 6px;
+  width: 10px;
+
+  &[data-color="blue"] { background-color: #2563eb; }
+  &[data-color="yellow"] { background-color: #ca8a04; }
+  &[data-color="green"] { background-color: #16a34a; }
+  &[data-color="purple"] { background-color: #9333ea; }
+  &[data-color="orange"] { background-color: #ea580c; }
+  &[data-color="red"] { background-color: #dc2626; }
+}
+
+.chat-message-content {
+  background-color: #fff;
+  border: 1px solid var(--color-black-300);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.chat-message-meta {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.chat-message-tag {
+  color: var(--color-blues-700);
+  font-style: italic;
+}
+
+.chat-message-sender {
+  color: var(--color-blues-900);
+  font-size: 13px;
+}
+
+.chat-message-time {
+  color: var(--color-black-500);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.chat-message-body {
+  font-size: 14px;
+  line-height: 1.35;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-message-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.chat-damage-btn {
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+.chat-compose {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(90px, 0.8fr) 1fr auto;
+}
+
+.chat-recipient,
+.chat-input {
+  min-width: 0;
+}
+
+.chat-send {
+  white-space: nowrap;
+}

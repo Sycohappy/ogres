@@ -1,14 +1,36 @@
 (ns events-test
   (:require [cljs.test :refer-macros [deftest is]]
             [datascript.core :as ds :refer [transact! entity]]
-            [ogres.app.events :refer [event-tx-fn]]
-            [ogres.app.provider.state :refer [initial-data]]))
+            [ogres.app.events :refer [event-tx-fn chat-message-tx sanitize-transaction without-chat-tx-data]]
+            [ogres.app.provider.state :refer [initial-data schema]]))
 
 (defn dispatch [conn event & args]
   (transact! conn [[:db.fn/call (fn [db] (apply event-tx-fn db event args))]]))
 
 (defn user [conn]
   (entity @conn [:db/ident :user]))
+
+(deftest test-chat-send-room
+  (let [conn (ds/create-conn schema)
+        _ (ds/reset-conn! conn (initial-data true))
+        uuid (random-uuid)]
+    (transact! conn [[:db/add [:db/ident :user] :user/uuid uuid]
+                     [:db/add [:db/ident :user] :session/status :connected]])
+    (dispatch conn :chat/send (random-uuid) "hi" nil (js/Date.now))
+    (let [{msgs :session/messages} (entity @conn [:db/ident :session])
+          msg (first msgs)]
+      (is (= "hi" (:chat/body msg)))
+      (is (not (contains? msg :chat/dst))))))
+
+(deftest test-chat-tx-sanitize
+  (let [legacy '[{:db/ident :session
+                  :session/messages {:chat/id #uuid "11111111-1111-1111-1111-111111111111"
+                                     :chat/body "hi"
+                                     :chat/src "abc"
+                                     :chat/dst nil
+                                     :chat/time 123}}]]
+    (is (not (contains? (:session/messages (first (sanitize-transaction legacy))) :chat/dst)))
+    (is (nil? (without-chat-tx-data legacy)))))
 
 (deftest test-panel
   (let [conn (ds/conn-from-db (initial-data true))]

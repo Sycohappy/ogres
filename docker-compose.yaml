@@ -12,9 +12,10 @@ services:
         # The URL that will be accessed by the user's browser
         # - When run in production, you will likely want to use `wss://{YOUR_DOMAIN}/ws`,
         #   with the Nginx container behind a SSL-terminated reverse proxy.
-        SERVER_SOCKET_URL: "ws://0.0.0.0:8080/ws"
+        SERVER_SOCKET_URL: "ws://127.0.0.1:8080/ws"
     volumes:
-      - frontend:/build
+      - frontend:/out
+    command: ["sh", "-c", "cp -a /build/. /out/ && echo frontend assets synced"]
     ports:
       # Port used for hot reloading in shadow-cljs's watch mode
       - "9630:9630"

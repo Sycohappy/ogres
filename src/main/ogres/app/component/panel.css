@@ -173,6 +173,14 @@
   }
 }
 
+.form[data-form="chat"] .form-body {
+  padding: 0;
+}
+
+.form[data-form="chat"] .form-footer {
+  display: block;
+}
+
 .form[data-form="props"] .form-footer {
   display: flex;
   gap: 4px;

@@ -1,6 +1,6 @@
 (ns ogres.app.provider.dispatch
   (:require [datascript.core :as ds]
-            [ogres.app.events :refer [event-tx-fn]]
+            [ogres.app.events :refer [event-tx-fn sanitize-transaction]]
             [ogres.app.provider.events :as events]
             [ogres.app.provider.state :as state]
             [uix.core :as uix :refer [defui $]]))
@@ -8,7 +8,8 @@
 (def ^:private context (uix/create-context))
 
 (defn ^:private tx-fn [data event args]
-  (apply event-tx-fn data event args))
+  (let [tx (apply event-tx-fn data event args)]
+    (if (seq tx) (sanitize-transaction tx) tx)))
 
 (defn ^:private use-dispatch-fn []
   (let [publish (events/use-publish)

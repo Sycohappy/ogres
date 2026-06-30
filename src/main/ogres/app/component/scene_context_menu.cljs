@@ -160,8 +160,15 @@
 (defui ^:private token-form-details
   [{:keys [on-change values]
     :or   {values (constantly (list)) on-change identity}}]
-  (let [value-fn (fn [attr] (first (into (sorted-set-by >) (values attr))))]
+  (let [value-fn (fn [attr] (first (into (sorted-set-by >) (values attr))))
+        sheet (first (values :token/character-sheet))]
     ($ :<>
+      (when sheet
+        ($ :.context-menu-sheet
+          ($ :p (str (:name sheet)
+                     (when-let [cr (:cr sheet)] (str " (CR " cr ")"))
+                     (when-let [ac (first (:ac sheet))] (str " — AC " ac))
+                     (when-let [hp (get-in sheet [:hp :average])] (str ", HP " hp))))))
       (let [value (value-fn :token/size)]
         ($ :<>
           ($ :label "Size")
@@ -252,12 +259,18 @@
                 :on-click #(on-change form)}
                ($ icon {:name icon-name})))
            (let [on (every? (comp vector? :scene/_initiative) data)]
-             ($ :button
-               {:type "button"
-                :data-selected on
-                :data-tooltip "Initiative"
-                :on-click #(dispatch :initiative/toggle idxs (not on))}
-               ($ icon {:name "hourglass-split"})))
+             ($ :<>
+               ($ :button
+                 {:type "button"
+                  :data-selected on
+                  :data-tooltip "Initiative"
+                  :on-click #(dispatch :initiative/toggle idxs (not on))}
+                 ($ icon {:name "hourglass-split"}))
+               ($ :button
+                 {:type "button"
+                  :data-tooltip "Roll initiative"
+                  :on-click #(doseq [{id :db/id} data] (dispatch :initiative/roll id))}
+                 ($ icon {:name "dice-5-fill"}))))
            (let [on (every? (comp boolean :player :token/flags) data)]
              ($ :button
                {:type "button"

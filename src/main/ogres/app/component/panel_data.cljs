@@ -16,11 +16,34 @@
 (def ^:private confirm-restore
   "Delete all your local data and restore this application using the provided backup?")
 
+(def ^:private query-sheets
+  [{:root/character-sheets
+    [:character-sheet/id
+     :character-sheet/name
+     :character-sheet/source
+     :character-sheet/data]}])
+
 (defui ^:memo panel []
   (let [[file-name set-file-name] (uix/use-state nil)
+        [import-error set-import-error] (uix/use-state nil)
         releases (uix/use-context release/context)
         dispatch (hooks/use-dispatch)
-        input (uix/use-ref)]
+        import! (hooks/use-document-importer)
+        result (hooks/use-query query-sheets [:db/ident :root])
+        sheets (:root/character-sheets result)
+        input (uix/use-ref)
+        import-input (uix/use-ref)]
+
+    (hooks/use-subscribe :import/error
+      (uix/use-callback
+       (fn [message filename]
+         (set-import-error (str "Failed to import " filename ": " message))) []))
+
+    (hooks/use-subscribe :import/success
+      (uix/use-callback
+       (fn [_count]
+         (set-import-error nil)) []))
+
     ($ :.form-help
       ($ :header ($ :h2 "Data"))
       ($ :fieldset.fieldset
@@ -49,6 +72,47 @@
                    (fn []
                      (if-let [_ (js/confirm confirm-delete)]
                        (dispatch :store/reset)))} "Delete local data"))))))
+      ($ :fieldset.fieldset
+        ($ :legend "Character Sheets")
+        ($ :div.form-notice
+          ($ :p {:style {:margin-bottom 4}}
+            "Import character sheets from Markdown, JSON, or PDF files. Parsed
+             sheets can be linked to token images in the Tokens panel.")
+          ($ :button.button.button-neutral
+            {:on-click #(.. import-input -current (click))}
+            "Import character sheets")
+          ($ :input
+            {:type "file"
+             :hidden true
+             :accept ".pdf,.md,.markdown,.json"
+             :multiple true
+             :ref import-input
+             :on-change
+             (fn [event]
+               (let [files (.. event -target -files)]
+                 (when (seq files)
+                   (import! files)
+                   (set! (.. event -target -value) ""))))})
+          (when import-error
+            ($ :p {:style {:color "var(--color-red-500)" :margin-top 8}} import-error))
+          (when (seq sheets)
+            ($ :ul {:style {:margin-top 12 :padding-left 0 :list-style "none"}}
+              (for [{:character-sheet/keys [id name source data]} sheets]
+                ($ :li
+                  {:key id
+                   :style {:display "flex"
+                           :justify-content "space-between"
+                           :align-items "center"
+                           :padding "4px 0"
+                           :border-bottom "1px solid var(--color-neutral-200)"}}
+                  ($ :span
+                    (str name
+                         (when (:cr data) (str " (CR " (:cr data) ")"))
+                         (when source (str " — " source))))
+                  ($ :button.button.button-danger
+                    {:type "button"
+                     :on-click #(dispatch :character-sheets/remove id)}
+                    "Remove")))))))
       ($ :fieldset.fieldset
         ($ :legend "Backup and Restore")
         ($ :div.form-notice

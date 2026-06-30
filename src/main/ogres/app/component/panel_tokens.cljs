@@ -19,6 +19,10 @@
 
 (def ^:private query-editor
   [{:root/user [:user/host]}
+   {:root/character-sheets
+    [:character-sheet/id
+     :character-sheet/name
+     :character-sheet/data]}
    {:root/token-images
     [:image/hash
      :image/public
@@ -30,7 +34,8 @@
      {:image/thumbnail
       [:image/hash :image/size]}
      :token-image/default-label
-     :token-image/url]}])
+     :token-image/url
+     :token-image/character-sheet]}])
 
 (def ^:private query-actions
   [{:root/user [:user/host]}
@@ -413,7 +418,9 @@
 (defui ^:private token-editor [props]
   (let [dispatch (hooks/use-dispatch)
         publish (hooks/use-publish)
-        {user :root/user images :root/token-images} (hooks/use-query query-editor [:db/ident :root])
+        {user :root/user
+         images :root/token-images
+         sheets :root/character-sheets} (hooks/use-query query-editor [:db/ident :root])
         [selected set-selected] (uix/use-state nil)
         data  (reverse (filter (comp (if (:user/host user) any? true?) :image/public) images))
         token (first (filter (comp #{selected} :image/hash) data))]
@@ -494,6 +501,32 @@
                    :default-value (:token-image/url token)
                    :spell-check false
                    :auto-complete "off"}))
+              ($ :fieldset.fieldset
+                ($ :legend "Character Sheet")
+                (if-let [sheet (:token-image/character-sheet token)]
+                  ($ :div.form-notice
+                    ($ :p (str (:name sheet)
+                               (when (:cr sheet) (str " (CR " (:cr sheet) ")"))))
+                    ($ :button.button.button-danger
+                      {:type "button"
+                       :on-click
+                       #(dispatch :token-images/change-character-sheet selected nil)}
+                      "Remove sheet"))
+                  ($ :p "No character sheet linked."))
+                (when (seq sheets)
+                  ($ :select.text.text-ghost
+                    {:default-value ""
+                     :on-change
+                     (fn [event]
+                       (let [id (.. event -target -value)]
+                         (when (not= id "")
+                           (when-let [entry (first (filter #(= id (str (:character-sheet/id %))) sheets))]
+                             (dispatch :token-images/change-character-sheet
+                                       selected (:character-sheet/data entry))))))}
+                    ($ :option {:value ""} "Link imported sheet...")
+                    (for [{:character-sheet/keys [id name data]} sheets]
+                      ($ :option {:key (str id) :value (str id)}
+                        (str name (when (:cr data) (str " (CR " (:cr data) ")"))))))))
               ($ :button {:type "submit" :hidden true})))
           ($ :button.token-editor-button
             {:on-click (:on-close props)}

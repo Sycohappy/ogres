@@ -106,11 +106,12 @@
   "Returns a description of an image to be persisted to DataScript state,
    containing the digest, filename, size in kb, width, and height."
   [filename image]
-  {:hash   (:hash image)
-   :name   filename
-   :size   (.-size (:data image))
-   :width  (:width image)
-   :height (:height image)})
+  (let [data (:data image)]
+    {:hash   (:hash image)
+     :name   filename
+     :size   (when data (.-size data))
+     :width  (:width image)
+     :height (:height image)}))
 
 (defn ^:private create-state-records
   "Returns a two-element vector containing descriptions of images to be
@@ -192,6 +193,20 @@
                   (dispatch :token-images/change-thumbnail hash data rect)))))) [read dispatch conn write]))
     ($ context {:value [urls on-request]}
       (:children props))))
+
+(defn import-token-file!
+  "Processes a File as a token image, persists it, and returns a Promise
+   resolving to the image hash."
+  [^js/File file write dispatch]
+  (-> (process-file file)
+      (.then (fn [files]
+               (.then (write :put (create-store-records files))
+                      (constantly files))))
+      (.then (fn [files]
+               (let [records (into [] (map create-state-records) [files])
+                     [[{:keys [hash]} _]] records]
+                 (dispatch :token-images/create-many records true)
+                 hash)))))
 
 (defn use-image-uploader
   "React hook which provides a function that accepts one or more uploaded

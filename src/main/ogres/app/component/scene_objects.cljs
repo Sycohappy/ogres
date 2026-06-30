@@ -477,7 +477,8 @@
            [:token/size :default 5]
            [:token/light :default 15]
            [:token/aura-radius :default 0]
-           {:token/image [:token-image/url :image/hash :image/public]}
+           {:token/image [:token-image/url :image/hash :image/public :token-image/character-sheet]}
+           :token/character-sheet
            {:scene/_initiative [:db/id :initiative/turn]}]}
          {:scene/shapes
           [:db/id
@@ -524,6 +525,7 @@
 (defui objects []
   (let [dispatch (hooks/use-dispatch)
         [_ set-ready] (uix/use-state false)
+        [measure-state set-measure-state] (uix/use-state nil)
         result (hooks/use-query query [:db/ident :root])
         {{bounds :user/bounds
           host :user/host
@@ -563,6 +565,44 @@
      (fn [] (set-ready true)) [])
 
     (use-drag-listener)
+
+    ;; Track drag start/move for the measurement line overlay.
+    (use-dnd-monitor
+     #js {"onDragStart"
+          (uix/use-callback
+           (fn [^js/Object data]
+             (let [id (.. data -active -id)]
+               (if (= id "selected")
+                 (let [sel (filter (comp selected :db/id) entities)
+                       pts (mapv :object/point sel)
+                       n   (count pts)]
+                   (when (pos? n)
+                     (set-measure-state
+                      {:start (Vec2. (/ (reduce + (map #(.-x %) pts)) n)
+                                     (/ (reduce + (map #(.-y %) pts)) n))
+                       :delta vec/zero})))
+                 (when-let [entity (some #(when (= (:db/id %) id) %) entities)]
+                   (when (= :token/token (:object/type entity))
+                     (set-measure-state {:start (:object/point entity)
+                                         :delta vec/zero}))))))
+           [entities selected set-measure-state])
+          "onDragMove"
+          (uix/use-callback
+           (fn [^js/Object data]
+             (let [dx (.. data -delta -x)
+                   dy (.. data -delta -y)]
+               (set-measure-state
+                (fn [s] (when s (assoc s :delta (Vec2. dx dy)))))))
+           [set-measure-state])
+          "onDragEnd"
+          (uix/use-callback
+           (fn [_] (set-measure-state nil))
+           [set-measure-state])
+          "onDragCancel"
+          (uix/use-callback
+           (fn [_] (set-measure-state nil))
+           [set-measure-state])})
+
     ($ :g.scene-objects {}
       ($ :g.scene-objects-portal
         {:ref portal :tab-index -1})
@@ -678,4 +718,33 @@
                          :data-type (namespace (:object/type (first select)))}
                         ($ context-menu
                           {:data select
-                           :host host})))))))))))))
+                           :host host}))))))))))
+      ;; Measurement line: shown while dragging a token.
+      ;; Text is sized in world-pixels adjusted by zoom so it stays
+      ;; readable at all zoom levels.  The label sits at the midpoint
+      ;; of the line, offset upward to avoid being under the token.
+      (when (and measure-state (not= (:delta measure-state) vec/zero))
+        (let [{:keys [start delta]} measure-state
+              end       (vec/add start delta)
+              dist-px   (vec/dist-cheb start end)
+              ft        (* (/ dist-px grid-size) 5)
+              rd        (js/Math.round ft)
+              dist-ft   (if (< (js/Math.abs (- ft rd)) 0.001) rd (.toFixed ft 1))
+              mid       (seg/midpoint (Segment. start end))
+              font-sz   (/ 14 scale)
+              offset    (/ 18 scale)]
+          ($ :g.scene-measure
+            {:style {:pointer-events "none"}}
+            ($ :line.scene-draw-shape
+              {:x1 (.-x start) :y1 (.-y start)
+               :x2 (.-x end)   :y2 (.-y end)})
+            ($ :circle.scene-draw-anchor {:r (/ 4 scale) :cx (.-x start) :cy (.-y start)})
+            ($ :circle.scene-draw-anchor-ring {:r (/ 6 scale) :cx (.-x start) :cy (.-y start)})
+            ($ :circle.scene-draw-anchor {:r (/ 4 scale) :cx (.-x end) :cy (.-y end)})
+            ($ :circle.scene-draw-anchor-ring {:r (/ 6 scale) :cx (.-x end) :cy (.-y end)})
+            ($ :text.scene-text.scene-text-draw
+              {:x        (.-x mid)
+               :y        (- (.-y mid) offset)
+               :font-size font-sz
+               :stroke-width (/ 3 scale)}
+              (str dist-ft "ft."))))))))

@@ -23,6 +23,8 @@
    :root/session      {:db/valueType :db.type/ref :db/isComponent true}
    :root/token-images {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
    :root/props-images {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
+   :root/character-sheets {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
+   :character-sheet/id {:db/unique :db.unique/identity}
    :root/user         {:db/valueType :db.type/ref :db/isComponent true}
    :scene/image       {:db/valueType :db.type/ref}
    :scene/initiative  {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
@@ -33,6 +35,8 @@
    :scene/props       {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
    :session/conns     {:db/valueType :db.type/ref :db.cardinality :db.cardinality/many :db/isComponent true}
    :session/host      {:db/valueType :db.type/ref}
+   :session/messages  {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
+   :chat/id           {:db/unique :db.unique/identity}
    :token/image       {:db/valueType :db.type/ref}
    :user/camera       {:db/valueType :db.type/ref}
    :user/cameras      {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
@@ -83,7 +87,8 @@
        (fn [hashes] (write :delete hashes)) [write]))))
 
 (def ^:private ignored-attrs
-  #{:user/host :user/ready :session/status})
+  #{:user/host :user/ready :session/status
+    :session/messages :chat/id :chat/body :chat/src :chat/dst :chat/time})
 
 (defui ^:private persistence [{:keys [host]}]
   (let [conn  (uix/use-context context)
@@ -99,7 +104,8 @@
             (if (:user/ready (ds/entity db-after [:db/ident :user]))
               (-> db-after
                   (ds/db-with [[:db/retract [:db/ident :session] :session/host]
-                               [:db/retract [:db/ident :session] :session/conns]])
+                               [:db/retract [:db/ident :session] :session/conns]
+                               [:db/retract [:db/ident :session] :session/messages]])
                   (ds/filter (fn [_ [_ attr _ _]] (not (contains? ignored-attrs attr))))
                   (ds/datoms :eavt)
                   (as-> datoms (t/write writer datoms))

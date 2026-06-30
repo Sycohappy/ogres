@@ -1,3 +1,4 @@
 **/.git
 **/cljs-runtime
 **/manifest.edn
+node_modules

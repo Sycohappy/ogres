@@ -1,9 +1,11 @@
 (ns ogres.app.events
-  (:require [datascript.core :as ds]
+  (:require [clojure.walk :as walk]
+            [datascript.core :as ds]
             [clojure.set :refer [union difference]]
-            [clojure.string :refer [trim]]
+            [clojure.string :as str :refer [trim]]
             [ogres.app.const :refer [grid-size half-size]]
             [ogres.app.geom :as geom]
+            [ogres.app.initiative :as initiative]
             [ogres.app.matrix :as matrix]
             [ogres.app.segment :as seg]
             [ogres.app.vec :as vec :refer [Vec2]]))
@@ -80,7 +82,66 @@
     (and (not (contains? flags :player))
          (not (number? roll)))))
 
+(defn ^:private log-initiative! [action payload]
+  (.log js/console (str "[ogres:initiative] " action) (clj->js payload)))
+
 (defmulti event-tx-fn (fn [_ event] event))
+
+(defn ^:private chat-attr? [attr]
+  (and (qualified-keyword? attr) (= "chat" (namespace attr))))
+
+(defn ^:private clean-chat-entity [entity]
+  (into {} (remove (comp nil? val) entity)))
+
+(defn chat-message-tx [id body src time dst]
+  [{:db/ident :session
+    :session/messages
+    (cond-> {:chat/id id
+             :chat/body body
+             :chat/src src
+             :chat/time time}
+      dst (assoc :chat/dst dst))}])
+
+(defn ^:private chat-tx-entry? [entry]
+  (cond
+    (and (vector? entry) (>= (count entry) 4) (= :db/add (first entry)))
+    (or (= :session/messages (nth entry 2))
+        (chat-attr? (nth entry 2)))
+
+    (map? entry)
+    (or (contains? entry :session/messages)
+        (some #(and (map? %) (:chat/id %)) (vals entry)))
+
+    :else false))
+
+(defn without-chat-tx-data
+  "Chat replicates over :chat/message; omit from :tx sync."
+  [tx-data]
+  (when (seq tx-data)
+    (vec (remove chat-tx-entry? tx-data))))
+
+(defn sanitize-transaction
+  "Removes nil chat attribute values from transaction data."
+  [tx-data]
+  (when (seq tx-data)
+    (vec
+     (for [entry tx-data
+           :let [entry (walk/postwalk
+                        (fn [x]
+                          (cond
+                            (and (map? x) (:chat/id x))
+                            (clean-chat-entity x)
+
+                            (and (map? x) (contains? x :session/messages))
+                            (update x :session/messages
+                                    #(if (map? %) (clean-chat-entity %) %))
+
+                            :else x))
+                        entry)]
+           :when (not (and (vector? entry) (>= (count entry) 4) (= :db/add (first entry))
+                           (chat-attr? (nth entry 2))
+                           (nil? (nth entry 3))))]
+       entry))))
 
 (defmethod event-tx-fn :default [] [])
 
@@ -576,6 +637,12 @@
       (conj [:db/add -1 :token/image (:db/id image)])
       (and (some? image) (some? (:token-image/default-label image)))
       (conj [:db/add -1 :token/label (:token-image/default-label image)])
+      (and (some? image)
+           (nil? (:token-image/default-label image))
+           (some? (:token-image/character-sheet image)))
+      (conj [:db/add -1 :token/label (:name (:token-image/character-sheet image))])
+      (and (some? image) (some? (:token-image/character-sheet image)))
+      (conj [:db/add -1 :token/character-sheet (:token-image/character-sheet image)])
       (not align?)
       (conj [:db/add -1 :object/point point])
       align?
@@ -676,6 +743,16 @@
         change (into #{} (ds/pull-many data select idxs))
         exists (into #{} (:scene/initiative result))]
     (if adding?
+      (let [newly-added (difference change exists)]
+        (doseq [{:keys [db/id token/label]} newly-added]
+          (log-initiative! "add"
+                           {:token-id id
+                            :label (or label "Unnamed token")})))
+      (doseq [{:keys [db/id token/label]} change]
+        (log-initiative! "remove"
+                         {:token-id id
+                          :label (or label "Unnamed token")})))
+    (if adding?
       [{:db/id scene
         :scene/initiative
         (let [merge (union exists change)
@@ -691,6 +768,18 @@
                [:db/retract id :initiative/health]
                [:db/retract scene :scene/initiative id]
                [:db/retract scene :initiative/played id]])))))
+
+(defn ^:private set-roll-txs
+  "Returns transaction data to set initiative roll, adding token to initiative if needed."
+  [data id total]
+  (let [user (ds/entity data [:db/ident :user])
+        scene-id (:db/id (:camera/scene (:user/camera user)))
+        {tokens :scene/initiative} (ds/pull data [{:scene/initiative [:db/id]}] scene-id)
+        in-initiative? (some #(= (:db/id %) id) tokens)]
+    (if in-initiative?
+      [{:db/id id :initiative/roll total}]
+      (into (event-tx-fn data :initiative/toggle [id] true)
+            [{:db/id id :initiative/roll total}]))))
 
 (defmethod event-tx-fn :initiative/next
   [data]
@@ -740,13 +829,60 @@
       :else
       [{:db/id id :initiative/roll parsed}])))
 
+(defmethod event-tx-fn :initiative/roll
+  [data _ id]
+  (let [token (ds/entity data id)
+        sheet (:token/character-sheet token)
+        {:keys [die modifier total]} (initiative/roll-result sheet)
+        scene-id (:db/id (:camera/scene (:user/camera (ds/entity data [:db/ident :user]))))
+        {tokens :scene/initiative} (ds/pull data [{:scene/initiative [:db/id]}] scene-id)
+        in-initiative? (some #(= (:db/id %) id) tokens)]
+    (log-initiative! "roll"
+                     {:token-id id
+                      :label (or (:token/label token) "Unnamed token")
+                      :die die
+                      :modifier modifier
+                      :total total
+                      :added (not in-initiative?)
+                      :sheet-name (:name sheet)})
+    (set-roll-txs data id total)))
+
+(defmethod event-tx-fn :initiative/roll-shared
+  [data _ ids sheet result]
+  (let [{:keys [die modifier total]} (or result (initiative/roll-result sheet))
+        scene-id (:db/id (:camera/scene (:user/camera (ds/entity data [:db/ident :user]))))
+        {initiative-tokens :scene/initiative}
+        (ds/pull data [{:scene/initiative [:db/id]}] scene-id)
+        in-initiative (into #{} (map :db/id) initiative-tokens)
+        not-in (remove in-initiative ids)
+        toggle-txs (when (seq not-in)
+                     (event-tx-fn data :initiative/toggle (vec not-in) true))
+        roll-txs (for [id ids] {:db/id id :initiative/roll total})]
+    (log-initiative! "roll-shared"
+                     {:token-ids ids
+                      :count (count ids)
+                      :die die
+                      :modifier modifier
+                      :total total
+                      :added (count not-in)
+                      :sheet-name (:name sheet)})
+    (into (or toggle-txs []) roll-txs)))
+
 (defmethod event-tx-fn :initiative/roll-all
   [data]
   (let [user (ds/entity data [:db/ident :user])
         {{{tokens :scene/initiative} :camera/scene} :user/camera} user
         idxs (sequence (comp (filter roll-token?) (map :db/id)) tokens)]
-    (for [[id roll] (zipmap idxs (random-rolls 1 20))]
-      {:db/id id :initiative/roll roll})))
+    (for [[id roll] (zipmap idxs (random-rolls 1 20))
+          :let [token (ds/entity data id)]]
+      (do
+        (log-initiative! "roll-all"
+                         {:token-id id
+                          :label (or (:token/label token) "Unnamed token")
+                          :die roll
+                          :modifier 0
+                          :total roll})
+        {:db/id id :initiative/roll roll}))))
 
 (defmethod event-tx-fn :initiative/change-health
   [data _ id f value]
@@ -817,10 +953,10 @@
   [{:image/hash hash
     :image/thumbnail-rect rect
     :image/thumbnail
-    {:image/hash (:hash thumb)
-     :image/size (.-size (:data thumb))
-     :image/width (:width thumb)
-     :image/height (:height thumb)}}])
+    (cond-> {:image/hash (:hash thumb)
+             :image/width (:width thumb)
+             :image/height (:height thumb)}
+      (some? (:data thumb)) (assoc :image/size (.-size (:data thumb))))}])
 
 (defmethod
   ^{:doc ""}
@@ -849,6 +985,44 @@
   [_ _ hash default-label url]
   [[:db.fn/call event-tx-fn :token-images/change-default-label hash default-label]
    [:db.fn/call event-tx-fn :token-images/change-url hash url]])
+
+(defmethod
+  ^{:doc "Assigns a character sheet map to the given token image template."}
+  event-tx-fn :token-images/change-character-sheet
+  [_ _ hash sheet]
+  (if (some? sheet)
+    [[:db/add [:image/hash hash] :token-image/character-sheet sheet]]
+    [[:db/retract [:image/hash hash] :token-image/character-sheet]]))
+
+(defmethod
+  ^{:doc "Updates the character sheet on the given token instances."}
+  event-tx-fn :token/change-character-sheet
+  [_ _ idxs sheet]
+  (for [id idxs]
+    (if (some? sheet)
+      {:db/id id :token/character-sheet sheet}
+      [:db/retract id :token/character-sheet])))
+
+;; -- Character Sheets --
+(defmethod
+  ^{:doc "Imports one or more parsed character sheets into the library."}
+  event-tx-fn :character-sheets/import
+  [_ _ sheets source]
+  [{:db/ident :root
+    :root/character-sheets
+    (for [sheet sheets
+          :let [name (:name sheet)]
+          :when (and (string? name) (not (str/blank? name)))]
+      {:character-sheet/id (random-uuid)
+       :character-sheet/name name
+       :character-sheet/data sheet
+       :character-sheet/source source})}])
+
+(defmethod
+  ^{:doc "Removes a character sheet from the library by id."}
+  event-tx-fn :character-sheets/remove
+  [_ _ id]
+  [[:db/retractEntity [:character-sheet/id id]]])
 
 ;; --- Masks ---
 (defmethod
@@ -910,10 +1084,31 @@
   ^{:doc "Destroys the existing online session, pruning it and all player
           user state."}
   event-tx-fn :session/close
-  []
-  [{:db/ident :user :session/status :disconnected}
-   [:db/retract [:db/ident :session] :session/host]
-   [:db/retract [:db/ident :session] :session/conns]])
+  [data]
+  (let [session (ds/entity data [:db/ident :session])
+        msgs (:session/messages session)]
+    (into [{:db/ident :user :session/status :disconnected}
+           [:db/retract [:db/ident :session] :session/host]
+           [:db/retract [:db/ident :session] :session/conns]
+           [:db/retract [:db/ident :session] :session/messages]]
+          (for [{id :chat/id} msgs]
+            [:db/retractEntity [:chat/id id]]))))
+
+(defmethod
+  ^{:doc "Sends a chat message to the room or as a whisper to one player."}
+  event-tx-fn :chat/send
+  [data _ id body dst time]
+  (let [user (ds/entity data [:db/ident :user])
+        src (:user/uuid user)
+        trimmed (trim body)
+        body (if (> (count trimmed) 500) (subs trimmed 0 500) trimmed)
+        dst (when (and (some? dst) (not= dst "")) dst)]
+    (when (and (= :connected (:session/status user))
+               (some? src)
+               (some? id)
+               (some? time)
+               (not= body ""))
+      (chat-message-tx id body src time dst))))
 
 (defmethod
   ^{:doc "Toggles whether or not live cursors are displayed for everyone
@@ -924,10 +1119,13 @@
 
 (defmethod event-tx-fn :session/change-status
   ^{:doc "Updates the user's session status in response to changes to
-          the WebSocket's ready state."}
+          the WebSocket's ready state. OPEN does not mark the session
+          connected; that happens when the server confirms via
+          :session/created or :session/joined."}
   [_ _ status]
-  (let [statuses {0 :connecting 1 :connected 2 :disconnecting 3 :disconnected}]
-    [{:db/ident :user :session/status (statuses status)}]))
+  (let [statuses {0 :connecting 2 :disconnecting 3 :disconnected}]
+    (when-let [next (statuses status)]
+      [{:db/ident :user :session/status next}])))
 
 (defmethod
   ^{:doc "Toggles whether or not the cursor of the local user is displayed
@@ -987,6 +1185,7 @@
    :token/size
    :token/aura-radius
    :token/image
+   :token/character-sheet
    :prop/image])
 
 (def ^:private clipboard-copy-select

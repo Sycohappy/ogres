@@ -45,7 +45,7 @@
   box-sizing: border-box;
   display: grid;
   grid-gap: 3px;
-  grid-template-columns: 24px 24px 48px 1fr 48px;
+  grid-template-columns: 24px 48px 48px 1fr 48px;
   padding: 8px;
   position: relative;
 
@@ -225,11 +225,35 @@
 }
 
 .initiative-token-roll {
+  gap: 2px;
+
   &[data-present="true"] {
     .initiative-token-roll-control {
       background-color: var(--color-blues-100);
       color: var(--color-black-100);
     }
+  }
+}
+
+.initiative-token-roll-dice {
+  align-items: center;
+  background-color: var(--color-paper-500);
+  border-color: var(--color-blues-500);
+  border-radius: 2px;
+  border-style: dotted;
+  border-width: 1px;
+  color: var(--color-blues-500);
+  cursor: pointer;
+  display: flex;
+  flex-shrink: 0;
+  height: 100%;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+
+  &:hover {
+    background-color: var(--color-blues-100);
+    color: var(--color-black-100);
   }
 }
 

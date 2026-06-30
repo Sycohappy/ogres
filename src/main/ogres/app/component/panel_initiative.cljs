@@ -20,6 +20,7 @@
          :initiative/roll
          :initiative/suffix
          :initiative/health
+         :token/character-sheet
          :camera/_selected
          {:token/image
           [:token-image/url
@@ -45,11 +46,20 @@
     (compare (f b) (f a))))
 
 (defui ^:private form-dice
-  [{:keys [value on-change]}]
+  [{:keys [value on-change on-roll]}]
   (let [[editing set-editing form] (hooks/use-modal)
         input (uix/use-ref)]
     ($ :.initiative-token-roll
       {:data-present (some? value)}
+      ($ :button.initiative-token-roll-dice
+        {:type "button"
+         :aria-label "Roll initiative"
+         :data-tooltip "Roll d20 + initiative"
+         :on-click
+         (fn [event]
+           (.stopPropagation event)
+           (on-roll))}
+        ($ icon {:name "dice-5-fill" :size 14}))
       ($ :button.initiative-token-roll-control
         {:on-click
          (fn [event]
@@ -146,7 +156,9 @@
         {:value (:initiative/roll entity)
          :on-change
          (fn [value]
-           (dispatch :initiative/change-roll id value))})
+           (dispatch :initiative/change-roll id value))
+         :on-roll
+         #(dispatch :initiative/roll id)})
       ($ :.initiative-token-frame
         {:on-click #(dispatch :objects/select id)
          :data-player (contains? flags :player)

@@ -41,10 +41,10 @@
             // visiting, it initializes the application with the latest stable
             // release.
             function main() {
-                // This checks to see if this application is being run locally
-                // for development and loads from a special directory instead.
-                if (window.location.hostname === "localhost") {
-                    initialize("release");
+                // Local development (Docker or shadow-cljs) loads the dev build.
+                let host = window.location.hostname;
+                if (host === "localhost" || host === "127.0.0.1") {
+                    initialize("release/dev");
                     return;
                 }
 

@@ -1,8 +1,10 @@
 (ns ogres.app.provider.session
-  (:require [cognitect.transit :as transit]
+  (:require [clojure.string :as str]
+            [cognitect.transit :as transit]
             [datascript.core :as ds]
             [goog.functions :refer [throttle]]
-            [ogres.app.const :refer [SOCKET-URL]]
+            [ogres.app.const :refer [resolve-socket-url]]
+            [ogres.app.events :refer [sanitize-transaction chat-message-tx without-chat-tx-data]]
             [ogres.app.hooks :as hooks]
             [ogres.app.provider.idb :as idb]
             [ogres.app.provider.state :as state]
@@ -44,6 +46,23 @@
 ;; creating or connecting to a session or to notify connections within a session
 ;; of important events. The embedded :data map will always contain a member
 ;; called :name to distinguish different kinds of events.
+(defn ^:private receive-chat-message!
+  [conn message data]
+  (let [{:keys [id body dst time]} data
+        src (:src message)
+        self (:user/uuid (ds/entity @conn [:db/ident :user]))
+        exists (ds/entity @conn [:chat/id id])
+        chat-time (or time (:time message))
+        dst (when (and (some? dst) (not= dst "")) dst)]
+    (when (and (nil? exists)
+               (some? id)
+               (some? src)
+               (some? chat-time)
+               (string? body)
+               (not (str/blank? body))
+               (or (nil? dst) (= dst self) (= src self)))
+      (ds/transact! conn (chat-message-tx id (str/trim body) src chat-time dst)))))
+
 (defmethod on-receive-text :event
   [{:keys [data] :as message} conn publish images on-send on-send-binary]
   (case (:name data)
@@ -106,7 +125,10 @@
 
     :cursor/moved
     (let [{src :src {[x y] :coord} :data} message]
-      (publish :cursor/moved src x y))))
+      (publish :cursor/moved src x y))
+
+    :chat/message
+    (receive-chat-message! conn message data)))
 
 ;; Handles messages that include a complete copy of the host's initial state as
 ;; a set of DataScript datoms. This message is generally received right after
@@ -133,7 +155,9 @@
 ;; and from any connection besides its own.
 (defmethod on-receive-text :tx
   [{:keys [data]} conn _ _ _ _]
-  (ds/transact! conn data))
+  (when (seq data)
+    (when-let [tx (some-> data sanitize-transaction without-chat-tx-data seq)]
+      (ds/transact! conn tx))))
 
 (defn ^:private on-receive-binary
   [message conn publish]
@@ -202,10 +226,11 @@
       (uix/use-callback
        (fn []
          (let [host (ds/entity @conn [:db/ident :user])
+               url (resolve-socket-url)
                conn (js/WebSocket.
                      (if (:session/last-room host)
-                       (str SOCKET-URL "?host=" (:session/last-room host))
-                       SOCKET-URL))]
+                       (str url "?host=" (:session/last-room host))
+                       url))]
            (set-socket conn))) [conn]))
 
     ;; Subscribe to requests to join the session, creating a WebSocket
@@ -217,7 +242,7 @@
                params (js/URLSearchParams. search)
                room   (.get params "join")]
            (if (some? room)
-             (let [conn (js/WebSocket. (str SOCKET-URL "?join=" room))]
+             (let [conn (js/WebSocket. (str (resolve-socket-url) "?join=" room))]
                (set-socket conn))))) []))
 
     ;; Subscribe to regular heartbeat events, rebroadcasting it to the other
@@ -274,7 +299,8 @@
     (hooks/use-subscribe :tx/commit
       (uix/use-callback
        (fn [{tx-data :tx-data}]
-         (on-send-text {:type :tx :data tx-data})) [on-send-text]))
+         (when-let [data (some-> tx-data sanitize-transaction without-chat-tx-data seq)]
+           (on-send-text {:type :tx :data data}))) [on-send-text]))
 
     ;; Subscribe to changes to the user's cursor position on the scene and
     ;; broadcast these changes to the other connections in the session.
@@ -284,6 +310,18 @@
          (fn [x y]
            (let [data {:name :cursor/moved :coord [x y]}]
              (on-send-text {:type :event :data data}))) 66) [on-send-text]))
+
+    (hooks/use-subscribe :chat/send
+      (uix/use-callback
+       (fn [id body dst time]
+         (let [data (cond-> {:name :chat/message
+                             :id id
+                             :body body
+                             :time time}
+                      dst (assoc :dst dst))
+               msg (cond-> {:type :event :data data}
+                      dst (assoc :dst dst))]
+           (on-send-text msg))) [on-send-text]))
 
     ;; Listen to the "message" event on the WebSocket object and forward the
     ;; event details to the appropriate handler.

@@ -2,6 +2,7 @@
   (:require [ogres.app.provider.events   :as provider.events]
             [ogres.app.provider.dispatch :as provider.dispatch]
             [ogres.app.provider.image    :as provider.image]
+            [ogres.app.provider.import   :as provider.import]
             [ogres.app.provider.portal   :as provider.portal]
             [ogres.app.provider.state    :as provider.state]
             [uix.core                    :as uix]
@@ -60,6 +61,10 @@
              is a map with image properties."}
   use-image-uploader
   provider.image/use-image-uploader)
+
+(def ^{:doc "Returns a function which accepts FileList and imports character sheets."}
+  use-document-importer
+  provider.import/use-document-importer)
 
 (def ^{:doc "Creates a new portal element of name `label` with contents
              rendered by `render-fn`. This portal can then be rendered

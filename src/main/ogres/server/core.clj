@@ -206,7 +206,7 @@
 (defn create-connector
   ([] (create-connector {}))
   ([{:keys [port] :or {port 5000}}]
-   (-> (conn/default-connector-map port)
+   (-> (conn/default-connector-map "0.0.0.0" port)
        (conn/with-default-interceptors)
        (conn/with-routes
          #{["/"   :get [handle-root]]

@@ -1,5 +1,7 @@
 (ns ogres.app.component.panel
   (:require [ogres.app.component :refer [icon]]
+            [ogres.app.component.panel-characters :as characters]
+            [ogres.app.component.panel-chat :as chat]
             [ogres.app.component.panel-data :as data]
             [ogres.app.component.panel-initiative :as initiative]
             [ogres.app.component.panel-lobby :as lobby]
@@ -36,19 +38,23 @@
       ($ :button.button {:disabled true} status-icon "Status not known"))))
 
 (def ^:private data
-  {:data       {:icon "wrench-adjustable-circle" :label "Manage local data"}
+  {:characters {:icon "globe-americas" :label "Character links"}
+   :data       {:icon "wrench-adjustable-circle" :label "Manage local data"}
    :initiative {:icon "hourglass-split" :label "Initiative"}
+   :chat       {:icon "journal-bookmark-fill" :label "Chat"}
    :lobby      {:icon "people-fill" :label "Online options"}
    :scene      {:icon "easel" :label "Scene options"}
    :tokens     {:icon "person-circle" :label "Token images"}
    :props      {:icon "images" :label "Prop images"}})
 
 (def ^:private forms
-  {true  [:tokens :scene :props :initiative :lobby :data]
-   false [:tokens :initiative :lobby]})
+  {true  [:tokens :characters :scene :props :initiative :chat :lobby :data]
+   false [:tokens :characters :initiative :chat :lobby]})
 
 (def ^:private components
-  {:data       {:form data/panel}
+  {:characters {:form characters/panel}
+   :chat       {:form chat/panel :footer chat/actions}
+   :data       {:form data/panel}
    :initiative {:form initiative/panel :footer initiative/actions}
    :lobby      {:form lobby/panel :footer lobby/actions}
    :scene      {:form scene/panel}
@@ -63,6 +69,7 @@
          expanded :panel/expanded} result]
     ($ :.panel
       {:data-expanded expanded}
+      ($ characters/initiative-popout-listeners)
       (if expanded
         ($ :.panel-status
           ($ status)))

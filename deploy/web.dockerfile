@@ -73,7 +73,10 @@ RUN git clone \
 # -----------------------------------------------------------------------------
 FROM nginx:alpine AS final
 
-ARG VERSION=local
+ARG VERSION=selfhosted
+
+ENV SERVER_SOCKET_URL=http://ogres-backend:8090/ws
+ENV RELEASE_VERSION=${VERSION}
 
 # Runtime target used by Nginx when proxying /ws.
 ENV SERVER_SOCKET_URL=http://ogres-backend:8090/ws

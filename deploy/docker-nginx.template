@@ -9,7 +9,7 @@ server {
 
     location = /play {
         if ($arg_r = "") {
-            return 302 $scheme://$http_host/play?r=local;
+            return 302 $scheme://$http_host/play?r=${RELEASE_VERSION};
         }
 
         root /usr/share/nginx/html;

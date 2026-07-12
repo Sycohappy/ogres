@@ -13,25 +13,49 @@
 
 (defonce ^:private pdfjs-loader (atom nil))
 
+(defn ^:private debug-log
+  [& parts]
+  (.apply js/console.log
+          (clj->js (into ["[ogres:import]"] parts))))
+
+(defn ^:private debug-json [label value]
+  (debug-log label (.stringify js/JSON (clj->js value) nil 2)))
+
+(defn ^:private file-meta [file]
+  #js {:name (.-name file)
+       :size (.-size file)
+       :type (.-type file)})
+
+(defn ^:private ensure-worker-src! [pdfjs]
+  (when-let [opts (aget pdfjs "GlobalWorkerOptions")]
+    (aset opts "workerSrc" pdfjs-worker-url)))
+
 (defn ^:private load-pdfjs []
   (if-let [pdfjs (aget js/window "pdfjsLib")]
-    (js/Promise.resolve pdfjs)
+    (do (debug-log "pdfjs already loaded")
+        (ensure-worker-src! pdfjs)
+        (js/Promise.resolve pdfjs))
     (or @pdfjs-loader
         (let [promise
               (js/Promise.
                (fn [resolve reject]
+                 (debug-log "loading pdfjs" pdfjs-url)
                  (let [script (.createElement js/document "script")]
                    (set! (.-src script) pdfjs-url)
                    (set! (.-async script) true)
                    (set! (.-onload script)
                          (fn []
                            (if-let [pdfjs (aget js/window "pdfjsLib")]
-                             (do
-                               (set! (.. pdfjs -GlobalWorkerOptions -workerSrc) pdfjs-worker-url)
-                               (resolve pdfjs))
+                             (if-let [_ (aget pdfjs "GlobalWorkerOptions")]
+                               (do (debug-log "pdfjs loaded")
+                                   (ensure-worker-src! pdfjs)
+                                   (resolve pdfjs))
+                               (reject (js/Error. "PDF.js GlobalWorkerOptions missing")))
                              (reject (js/Error. "PDF.js failed to initialize")))))
                    (set! (.-onerror script)
-                         (fn [] (reject (js/Error. "Failed to load PDF.js"))))
+                         (fn []
+                           (debug-log "pdfjs script failed to load")
+                           (reject (js/Error. "Failed to load PDF.js"))))
                    (.appendChild (.-head js/document) script))))]
           (reset! pdfjs-loader promise)
           promise))))
@@ -49,18 +73,23 @@
   (.text file))
 
 (defn ^:private extract-pdf-text [pdf page texts resolve]
-  (if (> page (.-numPages pdf))
-    (resolve (str/join "\n" texts))
-    (-> (.getPage pdf page)
-        (.then #(.getTextContent %))
+  (if (> page (aget pdf "numPages"))
+    (let [text (str/join "\n" texts)]
+      (debug-log "pdf text extracted" #js {:pages (dec page) :chars (count text)})
+      (debug-log "pdf text preview" (subs text 0 (min 1000 (count text))))
+      (resolve text))
+    (-> (.call (aget pdf "getPage") pdf page)
+        (.then #(.call (aget % "getTextContent") %))
         (.then
          (fn [content]
-           (let [page-text (->> (.-items content)
-                                (map #(.-str %))
-                                (str/join " "))]
+           (debug-log "pdf page read" page)
+           (let [page-text (->> (aget content "items")
+                                (map #(or (aget % "str") ""))
+                                (str/join "\n"))]
              (extract-pdf-text pdf (inc page) (conj texts page-text) resolve)))))))
 
 (defn ^:private read-pdf-text [file]
+  (debug-log "reading pdf" (file-meta file))
   (-> (load-pdfjs)
       (.then
        (fn [pdfjs]
@@ -70,41 +99,93 @@
               (set! (.-onload reader)
                     (fn [event]
                       (try
-                        (-> (pdfjs/getDocument #js {:data (.. event -target -result)})
-                            (.promise)
-                            (.then (fn [pdf] (extract-pdf-text pdf 1 [] resolve)))
-                            (.catch reject))
+                        (let [get-document (aget pdfjs "getDocument")
+                              data (.. event -target -result)]
+                          (debug-log "pdf arraybuffer ready" #js {:bytes (.-byteLength data)})
+                          (-> (.call get-document pdfjs #js {:data data})
+                              (aget "promise")
+                              (.then (fn [pdf]
+                                       (debug-log "pdf document opened"
+                                                  #js {:pages (aget pdf "numPages")})
+                                       (extract-pdf-text pdf 1 [] resolve)))
+                              (.catch
+                               (fn [err]
+                                 (debug-log "pdf document error" (.-message err))
+                                 (reject err)))))
                         (catch :default e
+                          (debug-log "pdf read error" (.-message e))
                           (reject e)))))
-              (set! (.-onerror reader) reject)
-              (.readAsArrayBuffer reader file))))))))
+              (set! (.-onerror reader)
+                    (fn [err]
+                      (debug-log "pdf filereader error" err)
+                      (reject err)))
+              (.readAsArrayBuffer reader file))))))
+      (.catch
+       (fn [err]
+         (debug-log "pdfjs load error" (.-message err))
+         (js/Promise.reject err)))))
+
+(defn ^:private parse-text [text format filename]
+  (debug-log "parsing" filename #js {:format (name format) :chars (count text)})
+  (debug-log "raw text preview" (subs text 0 (min 1000 (count text))))
+  (let [result (if (= format :pdf)
+                 (parser/parse-pdf-text text)
+                 (parser/parse-document text format))]
+    (debug-log "parse complete" filename #js {:valid (:valid? result)
+                                               :sheet-count (count (:sheets result))
+                                               :errors (:errors result)})
+    (debug-json (str "result json (" filename ")") result)
+    (debug-json (str "sheets json (" filename ")") (:sheets result))
+    result))
 
 (defn ^:private process-file [file]
-  (let [format (file-format file)]
+  (let [format (file-format file)
+        filename (.-name file)]
+    (debug-log "start" (file-meta file) #js {:format (when format (name format))})
     (if (nil? format)
-      (js/Promise.resolve {:valid? false :sheets [] :errors ["Unsupported file type"]})
+      (let [result {:valid? false :sheets [] :errors ["Unsupported file type"]}]
+        (debug-log "unsupported file type" filename)
+        (debug-json "result json" result)
+        (js/Promise.resolve result))
       (-> (if (= format :pdf)
             (read-pdf-text file)
             (read-text file))
-          (.then
-           (fn [text]
-             (if (= format :pdf)
-               (parser/parse-markdown text)
-               (parser/parse-document text format))))))))
+          (.then #(parse-text % format filename))
+          (.catch
+           (fn [err]
+             (debug-log "process-file error" filename (.-message err))
+             (js/Promise.reject err)))))))
 
 (defn use-document-importer []
   (let [dispatch (dispatch/use-dispatch)
         publish  (events/use-publish)]
     (uix/use-callback
      (fn [files]
+       (debug-log "files selected" #js {:count (.-length files)})
        (doseq [file (array-seq files)]
          (-> (process-file file)
              (.then
               (fn [{:keys [valid? sheets errors]}]
                 (if valid?
-                  (do (dispatch :character-sheets/import sheets (.-name file))
-                      (publish :import/success (count sheets)))
-                  (publish :import/error (first errors) (.-name file))))))))
+                  (do (debug-log "dispatching import"
+                                 (.-name file)
+                                 #js {:sheet-count (count sheets)
+                                      :names (clj->js (mapv :name sheets))})
+                      (try
+                        (dispatch :character-sheets/import sheets (.-name file))
+                        (debug-log "import success" (.-name file) #js {:sheets (count sheets)})
+                        (publish :import/success {:count (count sheets)
+                                                  :names (mapv :name sheets)})
+                        (catch :default e
+                          (debug-log "dispatch error" (.-name file) (.-message e))
+                          (publish :import/error (.-message e) (.-name file)))))
+                  (do (debug-log "import failed" (.-name file) (first errors))
+                      (publish :import/error (first errors) (.-name file))))))
+             (.catch
+              (fn [err]
+                (let [message (or (.-message err) (str err))]
+                  (debug-log "import exception" (.-name file) message)
+                  (publish :import/error message (.-name file))))))))
      [dispatch publish])))
 
 (defui ^:private listeners []

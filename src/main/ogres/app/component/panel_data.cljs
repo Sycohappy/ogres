@@ -1,5 +1,6 @@
 (ns ogres.app.component.panel-data
-  (:require [ogres.app.const :refer [VERSION]]
+  (:require [clojure.string :as str]
+            [ogres.app.const :refer [VERSION]]
             [ogres.app.hooks :as hooks]
             [ogres.app.provider.release :as release]
             [uix.core :as uix :refer [defui $]]))
@@ -23,9 +24,10 @@
      :character-sheet/source
      :character-sheet/data]}])
 
-(defui ^:memo panel []
+(defui panel []
   (let [[file-name set-file-name] (uix/use-state nil)
         [import-error set-import-error] (uix/use-state nil)
+        [import-success set-import-success] (uix/use-state nil)
         releases (uix/use-context release/context)
         dispatch (hooks/use-dispatch)
         import! (hooks/use-document-importer)
@@ -41,8 +43,14 @@
 
     (hooks/use-subscribe :import/success
       (uix/use-callback
-       (fn [_count]
-         (set-import-error nil)) []))
+       (fn [result]
+         (set-import-error nil)
+         (let [names (if (map? result) (:names result) nil)
+               count (if (map? result) (:count result) result)]
+           (set-import-success
+            (if (seq names)
+              (str "Imported " count " sheet(s): " (str/join ", " names))
+              (str "Imported " count " sheet(s)."))))) []))
 
     ($ :.form-help
       ($ :header ($ :h2 "Data"))
@@ -95,6 +103,8 @@
                    (set! (.. event -target -value) ""))))})
           (when import-error
             ($ :p {:style {:color "var(--color-red-500)" :margin-top 8}} import-error))
+          (when import-success
+            ($ :p {:style {:color "var(--color-green-600)" :margin-top 8}} import-success))
           (when (seq sheets)
             ($ :ul {:style {:margin-top 12 :padding-left 0 :list-style "none"}}
               (for [{:character-sheet/keys [id name source data]} sheets]

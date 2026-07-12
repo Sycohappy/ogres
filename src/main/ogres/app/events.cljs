@@ -1008,15 +1008,25 @@
   ^{:doc "Imports one or more parsed character sheets into the library."}
   event-tx-fn :character-sheets/import
   [_ _ sheets source]
-  [{:db/ident :root
-    :root/character-sheets
-    (for [sheet sheets
-          :let [name (:name sheet)]
-          :when (and (string? name) (not (str/blank? name)))]
-      {:character-sheet/id (random-uuid)
-       :character-sheet/name name
-       :character-sheet/data sheet
-       :character-sheet/source source})}])
+  (let [entries (vec
+                 (for [sheet sheets
+                       :let [name (:name sheet)]
+                       :when (and (string? name) (not (str/blank? name)))]
+                   {:character-sheet/id (str (random-uuid))
+                    :character-sheet/name name
+                    :character-sheet/data sheet
+                    :character-sheet/source source}))]
+    (when (seq sheets)
+      (.log js/console "[ogres:import] character-sheets/import"
+            #js {:parsed (count sheets)
+                 :stored (count entries)
+                 :names (clj->js (mapv :name sheets))
+                 :source source}))
+    (when (and (seq sheets) (empty? entries))
+      (.warn js/console "[ogres:import] parsed sheets had no importable names"
+             (clj->js sheets)))
+    [{:db/ident :root
+      :root/character-sheets entries}]))
 
 (defmethod
   ^{:doc "Removes a character sheet from the library by id."}

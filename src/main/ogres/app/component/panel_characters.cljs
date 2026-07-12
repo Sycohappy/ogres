@@ -127,11 +127,18 @@
          (escape-html description)
          "</button>")))
 
-(defn ^:private render-action-section [entries]
+(defn ^:private render-clickable-entry-section [title entries start-idx]
   (when (seq entries)
-    (str "<section class=\"section\"><h2>Actions</h2>"
-         (apply str (map-indexed render-action-button entries))
+    (str "<section class=\"section\"><h2>"
+         (escape-html title)
+         "</h2>"
+         (apply str (map-indexed (fn [idx entry]
+                                   (render-action-button (+ start-idx idx) entry))
+                                 entries))
          "</section>")))
+
+(defn ^:private render-action-section [entries]
+  (render-clickable-entry-section "Actions" entries 0))
 
 (defn ^:private render-actions-handler [entries popup-id]
   (when (seq entries)
@@ -214,7 +221,13 @@
                            "<span class=\"ability-name\">" label "</span>"
                            "<span class=\"ability-score\">" score "</span>"
                            "<span class=\"ability-mod\">(" (ability-mod score) ")</span>"
-                           "</button>")))]
+                           "</button>")))
+        actions (or (:action sheet) [])
+        bonus (or (:bonus sheet) [])
+        reactions (or (:reaction sheet) [])
+        clickable (into [] (concat actions bonus reactions))
+        bonus-offset (count actions)
+        reaction-offset (+ bonus-offset (count bonus))]
     (str "<!doctype html><html><head><meta charset=\"utf-8\"/>"
          "<title>" (escape-html title) "</title>"
          "<style>"
@@ -266,25 +279,29 @@
          (or (render-info-row "Proficiency Bonus" (:proficiency-bonus sheet)) "")
          "</div>"
          (or (render-entries "Traits" (:trait sheet)) "")
-         (or (render-action-section (:action sheet)) "")
+         (or (render-action-section actions) "")
+         (or (render-clickable-entry-section "Bonus Actions" bonus bonus-offset) "")
+         (or (render-clickable-entry-section "Reactions" reactions reaction-offset) "")
          (or (render-entries "Legendary Actions" (:legendary sheet)) "")
          "<details><summary>Raw JSON</summary><pre>"
          (escape-html (js/JSON.stringify (clj->js sheet) nil 2))
          "</pre></details>"
-         (or (render-actions-handler (:action sheet) popup-id) "")
+         (or (render-actions-handler clickable popup-id) "")
          (render-ability-roll-handler popup-id)
          "</body></html>")))
 
 (defn ^:private open-sheet-popout! [sheet image-hash]
   (let [popup-id (str (random-uuid))
-        actions (:action sheet)
+        actions (count (or (:action sheet) []))
+        bonus (count (or (:bonus sheet) []))
+        reactions (count (or (:reaction sheet) []))
         body (render-sheet-html sheet image-hash popup-id)
         popup (.open js/window "" "_blank" "popup,width=720,height=900")]
     (log-chat-action! "open popout"
                       {:popupId popup-id
                        :sheetName (:name sheet)
                        :imageHash image-hash
-                       :actionCount (count actions)
+                       :actionCount (+ actions bonus reactions)
                        :popupBlocked (nil? popup)})
     (when popup
       (swap! popups assoc popup-id popup)

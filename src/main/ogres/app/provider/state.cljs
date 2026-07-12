@@ -148,14 +148,11 @@
    (let [conn                   (uix/use-context context)
          get-result             (uix/use-callback #(ds/pull @conn pattern entity-id) ^:lint/disable [])
          [listen-key]           (uix/use-state random-uuid)
-         [prev-state set-state] (uix/use-state get-result)]
+         [result set-state]     (uix/use-state get-result)]
      (uix/use-effect
       (fn []
         (ds/listen! conn listen-key
-          (fn []
-            (let [next-state (get-result)]
-              (if (not= prev-state next-state)
-                (set-state next-state)))))
+          (fn [] (set-state (get-result))))
         (fn []
-          (ds/unlisten! conn listen-key))) ^:lint/disable [prev-state])
-     prev-state)))
+          (ds/unlisten! conn listen-key))) ^:lint/disable [conn get-result listen-key])
+     result)))

@@ -7,6 +7,15 @@ server {
         alias /usr/share/nginx/app/site/web/;
     }
 
+    location = /play {
+        if ($arg_r = "") {
+            return 302 $scheme://$http_host/play?r=local;
+        }
+
+        root /usr/share/nginx/html;
+        try_files /play.html /index.html =404;
+    }
+
     # App entrypoint supplied from Github Pages
     location /play {
         alias /usr/share/nginx/html/;

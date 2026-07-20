@@ -807,6 +807,193 @@
         (seq action-entries) (assoc :action action-entries)
         true (assoc :hasToken true :hasFluff true)))))
 
+(def ^:private visual-class-names
+  #{"barbarian" "bard" "cleric" "druid" "fighter" "monk"
+    "paladin" "ranger" "rogue" "sorcerer" "warlock" "wizard"})
+
+(def ^:private visual-species-names
+  #{"human" "elf" "dwarf" "halfling" "dragonborn" "gnome"
+    "half-elf" "half-orc" "tiefling" "orc" "goliath" "aasimar"})
+
+(defn ^:private visual-sheet-lines [text]
+  (mapv roll20-line (str/split-lines (normalize-text text))))
+
+(defn ^:private visual-character-sheet? [text]
+  (and (not (roll20-sheet? text))
+       (not (roll20-stat-block? text))
+       (re-find #"\"[^\"]+\"\s*-\s*.+" text)
+       (re-find #"(?i)\d+\s*ft" text)
+       (re-find #"\d+d\d+" text)
+       (some #(re-find (re-pattern (str "(?i)\\b" % "\\b")) text)
+             visual-class-names)))
+
+(defn ^:private visual-sheet-name [lines]
+  (when-let [line (first lines)]
+    (or (some-> (re-find #"\"([^\"]+)\"" line) second str/trim)
+        (str/trim line))))
+
+(defn ^:private visual-sheet-hp [lines]
+  (some (fn [i]
+          (when (< (inc i) (count lines))
+            (let [a (nth lines i)
+                  b (nth lines (inc i))]
+              (when (and (re-find #"^\d+$" a)
+                         (re-find #"^\d+d\d+" b))
+                {:average (js/parseInt a) :formula b}))))
+        (range (count lines))))
+
+(defn ^:private visual-sheet-speed [lines]
+  (when-let [line (some #(re-find #"^(\d+)\s*ft" %) lines)]
+    {:walk (js/parseInt (second line))}))
+
+(defn ^:private visual-sheet-ac [lines]
+  (when-let [height-idx (first (keep-indexed #(when (re-find #"^\d+'\d+\"" %2) %1) lines))]
+    (when (< (inc height-idx) (count lines))
+      (let [candidate (nth lines (inc height-idx))]
+        (when (re-find #"^\d{1,2}$" candidate)
+          [(js/parseInt candidate)])))))
+
+(defn ^:private visual-sheet-proficiency [lines]
+  (some #(when-let [m (re-find #"^\+(\d+)$" %)]
+           (str "+" (second m)))
+        lines))
+
+(defn ^:private visual-sheet-level [lines]
+  (some (fn [line]
+          (when-let [m (re-find #"^(\d{1,2})$" line)]
+            (let [n (js/parseInt (second m))]
+              (when (and (>= n 1) (<= n 20)) (str n)))))
+        (take 12 lines)))
+
+(defn ^:private visual-sheet-class [lines]
+  (some #(when (contains? visual-class-names (str/lower-case %))
+           (str/lower-case %))
+        lines))
+
+(defn ^:private visual-sheet-species [lines]
+  (some #(when (contains? visual-species-names (str/lower-case %))
+           (str/lower-case %))
+        lines))
+
+(defn ^:private visual-sheet-subclass [lines]
+  (some #(when (re-find #"(?i)^(College|School|Circle|Path|Domain) of\b" %)
+           %)
+        lines))
+
+(defn ^:private visual-sheet-languages [lines]
+  (some (fn [line]
+          (when (re-find #"(?i)^Common," line)
+            (parse-list line)))
+        lines))
+
+(defn ^:private visual-sheet-feature-line? [line]
+  (let [s (roll20-line line)]
+    (and (> (count s) 8)
+         (re-find #"\s" s)
+         (re-find #"^[A-Z]" s)
+         (re-find #"[a-z]{3,}" s)
+         (not (re-find #"^[+-]?\d+$" s))
+         (not (re-find #"^\d+$" s))
+         (not (re-find #"^\d+\s*ft" s))
+         (not (re-find #"^\d+d\d+" s))
+         (not (re-find #"^\d+'\d+\"" s))
+         (not (contains? visual-class-names (str/lower-case s)))
+         (not (contains? visual-species-names (str/lower-case s)))
+         (not (re-find #"(?i)^(Forgery|Costume|Armour|Backpack|Lantern|Days|Waterskin)" s)))))
+
+(defn ^:private visual-sheet-trait-entry [line]
+  (if-let [[_ name body] (re-find #"^([^:]+):\s*(.+)$" line)]
+    {:name (str/trim name) :entries [(str/trim body)]}
+    {:name line :entries []}))
+
+(defn ^:private visual-sheet-traits [lines]
+  (let [start (or (first (keep-indexed #(when (re-find #"(?i)Bardic Inspiration|Expertise:|Jack of All Trades" %2) %1) lines))
+                  0)
+        end (or (first (keep-indexed #(when (= "Charisma" %2) %1) lines))
+                (count lines))]
+    (vec (for [line (subvec lines start end)
+               :when (visual-sheet-feature-line? line)]
+           (visual-sheet-trait-entry line)))))
+
+(defn ^:private visual-sheet-spell-lines [lines]
+  (let [start (or (first (keep-indexed #(when (= "Charisma" %2) %1) lines))
+                  -1)
+        end (or (first (keep-indexed #(when (re-find #"(?i)^Forgery Kit," %2) %1) lines))
+                (count lines))]
+    (when (pos? start)
+      (vec (keep (fn [line]
+                   (when (and (re-find #"^[A-Z]" line)
+                              (not (re-find #"^\d+$" line))
+                              (not (= line "Charisma"))
+                              (not (re-find #"^\+(\d+)$" line))
+                              (not (re-find #"^C$" line))
+                              (> (count line) 3))
+                     line))
+                 (subvec lines (inc start) end))))))
+
+(defn ^:private visual-sheet-abilities [lines ac]
+  (let [ac-val (first ac)
+        start (or (first (keep-indexed #(when (re-find #"^\d+'\d+\"" %2) %1) lines)) 0)
+        end (or (first (keep-indexed #(when (visual-sheet-feature-line? %2) %1) lines))
+                (count lines))
+        scores (loop [i (+ start 2)
+                      seen #{}
+                      out []]
+                 (if (or (>= i end) (>= (count out) 6))
+                   out
+                   (let [line (nth lines i)]
+                     (if (and (re-find #"^\d{1,2}$" line)
+                              (<= 6 (js/parseInt line) 20)
+                              (not= (js/parseInt line) ac-val)
+                              (not (contains? seen line)))
+                       (recur (inc i) (conj seen line) (conj out (js/parseInt line)))
+                       (recur (inc i) seen out)))))]
+    (when (>= (count scores) 4)
+      (cond-> {}
+        (first scores) (assoc :str (nth scores 0))
+        (> (count scores) 1) (assoc :dex (nth scores 1))
+        (> (count scores) 2) (assoc :con (nth scores 2))
+        (> (count scores) 3) (assoc :int (nth scores 3))
+        (> (count scores) 4) (assoc :wis (nth scores 4))
+        (> (count scores) 5) (assoc :cha (nth scores 5))))))
+
+(defn ^:private parse-visual-character-sheet [text]
+  (let [lines (visual-sheet-lines text)
+        name (visual-sheet-name lines)
+        ac (visual-sheet-ac lines)
+        spells (visual-sheet-spell-lines lines)
+        traits (into (visual-sheet-traits lines)
+                     (when (seq spells)
+                       [{:name "Spells"
+                         :entries [(str/join ", " spells)]}]))]
+    (when (seq name)
+      (cond-> {:name name}
+        (visual-sheet-hp lines) (assoc :hp (visual-sheet-hp lines))
+        ac (assoc :ac ac)
+        (visual-sheet-speed lines) (assoc :speed (visual-sheet-speed lines))
+        (visual-sheet-proficiency lines)
+        (assoc :proficiency-bonus (visual-sheet-proficiency lines))
+        (visual-sheet-level lines) (assoc :cr (visual-sheet-level lines))
+        (visual-sheet-class lines) (assoc :type "humanoid")
+        (visual-sheet-species lines) (assoc :subtype (visual-sheet-species lines))
+        (visual-sheet-species lines) (assoc :size ["M"])
+        (visual-sheet-abilities lines ac) (merge (visual-sheet-abilities lines ac))
+        (visual-sheet-languages lines) (assoc :languages (visual-sheet-languages lines))
+        (seq traits) (assoc :trait traits)
+        true (assoc :hasToken true :hasFluff true)))))
+
+(defn ^:private parse-visual-character-sheet-text [text]
+  (try
+    (let [text (normalize-text text)]
+      (if-not (visual-character-sheet? text)
+        {:valid? false :sheets [] :errors ["No visual character sheet found in PDF"]}
+        (if-let [sheet (parse-visual-character-sheet text)]
+          {:valid? true :sheets [sheet] :errors []}
+          {:valid? false :sheets [] :errors ["Failed to parse visual character sheet"]})))
+    (catch :default e
+      (.error js/console "[ogres:import:parser] visual sheet parse error" (.-message e))
+      {:valid? false :sheets [] :errors [(.-message e)]})))
+
 (defn ^:private parse-roll20-stat-block-text [text]
   (try
     (let [text (normalize-text text)]
@@ -874,22 +1061,31 @@
               stat-block)
 
           :else
-          (let [markdown (parse-markdown text)]
+          (let [visual (parse-visual-character-sheet-text text)]
             (cond
-              (:valid? markdown)
-              (do (.log js/console "[ogres:import:parser] matched markdown stat block")
-                  markdown)
+              (:valid? visual)
+              (do (.log js/console "[ogres:import:parser] matched visual character sheet")
+                  visual)
 
               :else
-              (do (.log js/console "[ogres:import:parser] no pdf format matched"
-                         #js {:roll20-error (first (:errors roll20))
-                              :stat-block-error (first (:errors stat-block))
-                              :markdown-error (first (:errors markdown))})
-                  {:valid? false
-                   :sheets []
-                   :errors [(first (concat (:errors roll20)
-                                           (:errors stat-block)
-                                           (:errors markdown)))]}))))))))
+              (let [markdown (parse-markdown text)]
+                (cond
+                  (:valid? markdown)
+                  (do (.log js/console "[ogres:import:parser] matched markdown stat block")
+                      markdown)
+
+                  :else
+                  (do (.log js/console "[ogres:import:parser] no pdf format matched"
+                             #js {:roll20-error (first (:errors roll20))
+                                  :stat-block-error (first (:errors stat-block))
+                                  :visual-sheet-error (first (:errors visual))
+                                  :markdown-error (first (:errors markdown))})
+                      {:valid? false
+                       :sheets []
+                       :errors [(first (concat (:errors roll20)
+                                               (:errors stat-block)
+                                               (:errors visual)
+                                               (:errors markdown)))]}))))))))))
 
 (defn ^:private json-sheets [parsed]
   (cond

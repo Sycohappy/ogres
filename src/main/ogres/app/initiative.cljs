@@ -12,13 +12,20 @@
 (defn ^:private format-signed-mod [n]
   (str (if (neg? n) "" "+") n))
 
+(def ^:private attack-modifier-patterns
+  [#"(?i)attack\s+roll[^+\d-]*([+-]\d+)"
+   #"(?i)(?:melee|ranged)\s+(?:spell|weapon)\s+attack:[^+\d-]*([+-]\d+)"
+   #"(?i)spell\s+attack:[^+\d-]*([+-]\d+)"
+   #"(?i)([+-]\d+)\s+to hit"])
+
 (defn attack-modifier
   "Parses the to-hit modifier from an action description, if present."
   [description]
-  (when (and (string? description)
-             (re-find #"(?i)attack\s+roll" description))
-    (when-let [m (re-find #"(?i)attack\s+roll[^+\d-]*([+-]\d+)" description)]
-      (parse-modifier (nth m 1)))))
+  (when (string? description)
+    (some (fn [pattern]
+            (when-let [m (re-find pattern description)]
+              (parse-modifier (nth m 1))))
+          attack-modifier-patterns)))
 
 (defn attack-roll-result
   "Rolls d20 plus the attack modifier parsed from the description."
@@ -31,10 +38,15 @@
   [{:keys [die modifier total]}]
   (str total " (d20 " (format-signed-mod modifier) ")"))
 
+(defn ^:private attack-text? [text]
+  (or (re-find #"(?i)attack\s+roll" text)
+      (re-find #"(?i)(?:melee|ranged)\s+(?:spell|weapon)\s+attack:" text)
+      (re-find #"(?i)spell\s+attack:" text)))
+
 (defn attack-message?
   "True when the chat body looks like a sheet attack action."
   [text]
-  (and (string? text) (re-find #"(?i)attack\s+roll" text)))
+  (and (string? text) (attack-text? text)))
 
 (defn saving-throw-message?
   "True when the chat body describes a saving throw action."

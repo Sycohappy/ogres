@@ -160,19 +160,6 @@
   grid-template-columns: 1fr max-content max-content;
 }
 
-.form[data-form="initiative"] .form-body {
-  padding: 0;
-}
-
-.form[data-form="initiative"] .form-footer {
-  display: flex;
-  gap: 4px;
-
-  button {
-    flex: 1;
-  }
-}
-
 .form[data-form="chat"] .form-body {
   padding: 0;
 }

@@ -42,7 +42,7 @@
   }
 
   &[data-outgoing="true"] .chat-message-content {
-    background-color: var(--color-blues-100);
+    background-color: hsl(208, 22%, 92%);
   }
 }
 

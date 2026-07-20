@@ -72,9 +72,12 @@
 (defn ^:private read-text [file]
   (.text file))
 
-(defn ^:private extract-pdf-text [pdf page texts resolve]
+(defn ^:private extract-pdf-text [pdf page page-items resolve]
   (if (> page (aget pdf "numPages"))
-    (let [text (str/join "\n" texts)]
+    (let [text (->> page-items
+                    (sort-by (fn [{:keys [page y x]}] [page (- y) x]))
+                    (map :s)
+                    (str/join "\n"))]
       (debug-log "pdf text extracted" #js {:pages (dec page) :chars (count text)})
       (debug-log "pdf text preview" (subs text 0 (min 1000 (count text))))
       (resolve text))
@@ -83,10 +86,15 @@
         (.then
          (fn [content]
            (debug-log "pdf page read" page)
-           (let [page-text (->> (aget content "items")
-                                (map #(or (aget % "str") ""))
-                                (str/join "\n"))]
-             (extract-pdf-text pdf (inc page) (conj texts page-text) resolve)))))))
+           (let [items (for [item (array-seq (aget content "items"))
+                             :let [s (str/trim (or (aget item "str") ""))]
+                             :when (seq s)
+                             transform (aget item "transform")]
+                         {:page page
+                          :y (or (aget transform 5) 0)
+                          :x (or (aget transform 4) 0)
+                          :s s})]
+             (extract-pdf-text pdf (inc page) (into page-items items) resolve)))))))
 
 (defn ^:private read-pdf-text [file]
   (debug-log "reading pdf" (file-meta file))

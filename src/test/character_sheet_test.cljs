@@ -36,7 +36,7 @@
               "Shillelagh"
               "Melee Spell Attack: +6 to hit, reach 5 ft., one target.")]
     (is (str/starts-with? body "Shillelagh. Melee Spell Attack: +6"))
-    (is (re-find #"— \d+ \(d20 \+6\)$" body)))
+    (is (re-find #"— \d+ \(d20 \+6\)$" body))))
 
 (deftest test-action-chat-body-markdown-weapon-attack
   (let [body (initiative/action-chat-body

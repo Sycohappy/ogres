@@ -10,7 +10,8 @@
 .layout-scenes,
 .layout-scene,
 .layout-toolbar,
-.layout-panel {
+.layout-panel,
+.layout-initiative {
   contain: size layout style;
 }
 
@@ -22,6 +23,12 @@
 .layout-toolbar,
 .layout-players {
   grid-area: canvas;
+}
+
+.layout-initiative {
+  grid-area: initiative;
+  min-height: 0;
+  min-width: 0;
 }
 
 .layout-panel {
@@ -70,8 +77,11 @@
 @media /* Portrait */ (max-aspect-ratio: 1 / 1) {
   .layout {
     &[data-user="host"] {
-      grid-template-areas: "scenes" "canvas" "side";
-      grid-template-columns: 1fr;
+      grid-template-areas:
+        "scenes scenes"
+        "initiative canvas"
+        "side side";
+      grid-template-columns: minmax(220px, 40%) 1fr;
       grid-template-rows: 32px 1fr 1fr;
 
       &[data-expanded="false"] {
@@ -79,7 +89,7 @@
       }
 
       .layout-scene {
-        border-radius: 0 0 9px 9px;
+        border-radius: 0 0 9px 0;
       }
 
       .scenes-scene {
@@ -88,8 +98,10 @@
     }
 
     &[data-user="conn"] {
-      grid-template-areas: "canvas" "side";
-      grid-template-columns: 1fr;
+      grid-template-areas:
+        "initiative canvas"
+        "side side";
+      grid-template-columns: minmax(220px, 40%) 1fr;
       grid-template-rows: 1fr 1fr;
 
       &[data-expanded="false"] {
@@ -97,14 +109,19 @@
       }
 
       .layout-scene {
-        border-radius: 9px;
+        border-radius: 0 9px 9px 0;
       }
     }
 
     .layout-scene,
     .layout-panel .panel,
-    .layout-panel .panel[data-expanded="false"] .panel-tabs {
+    .layout-panel .panel[data-expanded="false"] .panel-tabs,
+    .layout-initiative .initiative-sidebar {
       box-shadow: none;
+    }
+
+    .layout-initiative .initiative-sidebar {
+      border-radius: 3px 0 0 3px;
     }
 
     .layout-panel {
@@ -162,14 +179,14 @@
 
 @media /* Landscape */ (min-aspect-ratio: 1 / 1) or (aspect-ratio: 1 / 1) {
   .layout {
-    grid-template-columns: 1fr 420px;
+    grid-template-columns: 300px 1fr 420px;
     grid-template-rows: 32px 1fr;
     grid-template-areas:
-      "scenes side"
-      "canvas side";
+      "initiative scenes side"
+      "initiative canvas side";
 
     &[data-expanded="false"] {
-      grid-template-columns: 1fr 40px;
+      grid-template-columns: 300px 1fr 40px;
     }
 
     &[data-user="host"] {
@@ -179,7 +196,7 @@
     }
 
     &[data-user="conn"] {
-      grid-template-areas: "canvas side";
+      grid-template-areas: "initiative canvas side";
       grid-template-rows: 1fr;
 
       &[data-expanded="false"] .panel-tabs {

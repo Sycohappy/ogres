@@ -3,7 +3,7 @@
             [ogres.app.component.panel-characters :as characters]
             [ogres.app.component.panel-chat :as chat]
             [ogres.app.component.panel-data :as data]
-            [ogres.app.component.panel-initiative :as initiative]
+            [ogres.app.component.panel-dice :as dice]
             [ogres.app.component.panel-lobby :as lobby]
             [ogres.app.component.panel-scene :as scene]
             [ogres.app.component.panel-tokens :as tokens]
@@ -38,24 +38,24 @@
       ($ :button.button {:disabled true} status-icon "Status not known"))))
 
 (def ^:private data
-  {:characters {:icon "globe-americas" :label "Character links"}
+  {:characters {:icon "person-vcard" :label "Characters"}
    :data       {:icon "wrench-adjustable-circle" :label "Manage local data"}
-   :initiative {:icon "hourglass-split" :label "Initiative"}
    :chat       {:icon "journal-bookmark-fill" :label "Chat"}
+   :dice       {:icon "dice-5-fill" :label "Dice roller"}
    :lobby      {:icon "people-fill" :label "Online options"}
    :scene      {:icon "easel" :label "Scene options"}
    :tokens     {:icon "person-circle" :label "Token images"}
    :props      {:icon "images" :label "Prop images"}})
 
 (def ^:private forms
-  {true  [:tokens :characters :scene :props :initiative :chat :lobby :data]
-   false [:tokens :characters :initiative :chat :lobby]})
+  {true  [:tokens :characters :scene :props :chat :dice :lobby :data]
+   false [:tokens :characters :chat :dice :lobby]})
 
 (def ^:private components
   {:characters {:form characters/panel}
    :chat       {:form chat/panel :footer chat/actions}
    :data       {:form data/panel}
-   :initiative {:form initiative/panel :footer initiative/actions}
+   :dice       {:form dice/panel}
    :lobby      {:form lobby/panel :footer lobby/actions}
    :scene      {:form scene/panel}
    :tokens     {:form tokens/panel :footer tokens/actions}
@@ -66,7 +66,8 @@
         result   (hooks/use-query query)
         {host :user/host
          selected :panel/selected
-         expanded :panel/expanded} result]
+         expanded :panel/expanded} result
+        selected (if (contains? components selected) selected :tokens)]
     ($ :.panel
       {:data-expanded expanded}
       ($ characters/initiative-popout-listeners)

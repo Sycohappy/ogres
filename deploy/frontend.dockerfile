@@ -32,8 +32,6 @@ RUN cp web/dev/bestiary.md web/dev/mt28.png "web/release/${VERSION}/" 2>/dev/nul
 RUN clojure -M -m shadow.cljs.devtools.cli release app \
   --config-merge "{:closure-defines {ogres.app.const/VERSION \"${VERSION}\" ogres.app.const/PATH \"/release/${VERSION}\" ogres.app.const/SOCKET-URL \"${SERVER_SOCKET_URL}\"}}"
 
-VOLUME ["/build"]
-
 # Watch build stage (for development)
 # - Compiles the ClojureScript frontend to the `/release` directory
 # - Watches for changes in the source code and rebuilds automatically

@@ -33,6 +33,7 @@
    :scene/tokens      {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
    :scene/notes       {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
    :scene/props       {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
+   :session/active-scene {:db/valueType :db.type/ref}
    :session/conns     {:db/valueType :db.type/ref :db.cardinality :db.cardinality/many :db/isComponent true}
    :session/host      {:db/valueType :db.type/ref}
    :session/messages  {:db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
@@ -62,7 +63,8 @@
     [:db/add -3 :panel/selected :tokens]
     [:db/add -4 :camera/scene -2]
     [:db/add -4 :camera/point vec/zero]
-    [:db/add -5 :db/ident :session]]))
+    [:db/add -5 :db/ident :session]
+    [:db/add -5 :session/active-scene -2]]))
 
 (def context (uix/create-context))
 

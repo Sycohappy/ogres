@@ -324,42 +324,71 @@
   [{:db/ident :user :user/camera id}])
 
 (defmethod
+  ^{:doc "Sets the session's active scene from the given host camera and moves
+          all connected players to that scene without changing pan or zoom."}
+  event-tx-fn :scenes/activate
+  [data _ camera-id]
+  (let [scene-id (:db/id (:camera/scene (ds/entity data camera-id)))
+        conns (:session/conns (ds/entity data [:db/ident :session]))]
+    (->> (for [[temp-id conn] (sequence (indexed) conns)
+               :let [curr-scn (-> conn :user/camera :camera/scene :db/id)]
+               :when (not= curr-scn scene-id)]
+           (if-let [next-cam (first (filter (comp #{scene-id} :db/id :camera/scene) (:user/cameras conn)))]
+             [{:db/id (:db/id conn) :user/camera (:db/id next-cam)}]
+             [{:db/id (:db/id conn) :user/camera temp-id :user/cameras temp-id}
+              {:db/id temp-id :camera/scene scene-id :camera/point vec/zero}]))
+         (into [[:db/add [:db/ident :session] :session/active-scene scene-id]] cat))))
+
+(defmethod
   ^{:doc "Removes the scene and corresponding camera for the local user. Also
           removes all scene cameras for any connected users and switches them
-          to whichever scene the host is now on."}
+          to the session's active scene. When the removed scene was active,
+          the active scene is reassigned to the scene the host lands on."}
   event-tx-fn :scenes/remove
   [data _ camera-id]
   (let [root (ds/entity data [:db/ident :root])
         user (ds/entity data [:db/ident :user])
+        session (ds/entity data [:db/ident :session])
         prev-cam (ds/entity data camera-id)
-        prev-scn (:db/id (:camera/scene prev-cam))]
-    (conj
-     (if (= (:db/id (:user/camera user)) (:db/id prev-cam))
-       (if-let [next-scn (:db/id (first (remove (comp #{prev-scn} :db/id) (:root/scenes root))))]
-         (if-let [next-cam (:db/id (first (filter (comp #{next-scn} :db/id :camera/scene) (:user/cameras user))))]
-           [[:db/add (:db/id user) :user/camera next-cam]]
-           [[:db/add (:db/id user) :user/camera -1]
-            [:db/add (:db/id user) :user/cameras -1]
-            [:db/add -1 :camera/scene next-scn]
-            [:db/add -1 :camera/point vec/zero]])
-         [[:db/add (:db/id root) :root/scenes -2]
-          [:db/add (:db/id user) :user/camera -1]
-          [:db/add (:db/id user) :user/cameras -1]
-          [:db/add -1 :camera/scene -2]
-          [:db/add -1 :camera/point vec/zero]
-          [:db/add -2 :db/empty true]]) [])
-     [:db.fn/call event-tx-fn :scenes/sync-with-user prev-scn]
-     [:db/retractEntity prev-scn]
-     [:db/retractEntity camera-id])))
+        prev-scn (:db/id (:camera/scene prev-cam))
+        active-scn (:db/id (:session/active-scene session))
+        host-scn (-> user :user/camera :camera/scene :db/id)
+        [host-txs land-scn]
+        (if (= (:db/id (:user/camera user)) (:db/id prev-cam))
+          (if-let [next-scn (:db/id (first (remove (comp #{prev-scn} :db/id) (:root/scenes root))))]
+            (if-let [next-cam (:db/id (first (filter (comp #{next-scn} :db/id :camera/scene) (:user/cameras user))))]
+              [[[:db/add (:db/id user) :user/camera next-cam]] next-scn]
+              [[[:db/add (:db/id user) :user/camera -1]
+                [:db/add (:db/id user) :user/cameras -1]
+                [:db/add -1 :camera/scene next-scn]
+                [:db/add -1 :camera/point vec/zero]] next-scn])
+            [[[:db/add (:db/id root) :root/scenes -2]
+              [:db/add (:db/id user) :user/camera -1]
+              [:db/add (:db/id user) :user/cameras -1]
+              [:db/add -1 :camera/scene -2]
+              [:db/add -1 :camera/point vec/zero]
+              [:db/add -2 :db/empty true]] -2])
+          [[] host-scn])]
+    (concat
+     host-txs
+     (when (= prev-scn active-scn)
+       [[:db/add (:db/id session) :session/active-scene land-scn]])
+     [[:db.fn/call event-tx-fn :scenes/sync-with-user prev-scn]
+      [:db/retractEntity prev-scn]
+      [:db/retractEntity camera-id]])))
 
 (defmethod
   ^{:doc "Find all players that are currently viewing the given scene and
-          move them to the scene being viewd by the current user."}
+          move them to the session's active scene, or the host's current
+          scene when no active scene is set."}
   event-tx-fn
   :scenes/sync-with-user
   [data _ prev-scn]
-  (let [next-scn (-> (ds/entity data [:db/ident :user]) :user/camera :camera/scene :db/id)]
-    (->> (for [conn (:session/conns (ds/entity data [:db/ident :session]))
+  (let [session (ds/entity data [:db/ident :session])
+        user (ds/entity data [:db/ident :user])
+        next-scn (or (:db/id (:session/active-scene session))
+                     (-> user :user/camera :camera/scene :db/id))]
+    (->> (for [conn (:session/conns session)
                :let [curr-scn (-> conn :user/camera :camera/scene :db/id)]
                :when (= curr-scn prev-scn)
                :let [curr-cam (first (filter (comp #{curr-scn} :db/id :camera/scene) (:user/cameras conn)))]]
@@ -643,6 +672,10 @@
       (conj [:db/add -1 :token/label (:name (:token-image/character-sheet image))])
       (and (some? image) (some? (:token-image/character-sheet image)))
       (conj [:db/add -1 :token/character-sheet (:token-image/character-sheet image)])
+      (and (some? image) (some? (:token-image/default-size image)))
+      (conj [:db/add -1 :token/size (:token-image/default-size image)])
+      (and (some? image) (some? (:token-image/default-light image)))
+      (conj [:db/add -1 :token/light (:token-image/default-light image)])
       (not align?)
       (conj [:db/add -1 :object/point point])
       align?
@@ -979,6 +1012,22 @@
       [[:db/add [:image/hash hash] :token-image/url value]])))
 
 (defmethod
+  ^{:doc "Changes the default size applied to tokens created from an image."}
+  event-tx-fn :token-images/change-default-size
+  [_ _ hash size]
+  (if (some? size)
+    [[:db/add [:image/hash hash] :token-image/default-size size]]
+    [[:db/retract [:image/hash hash] :token-image/default-size]]))
+
+(defmethod
+  ^{:doc "Changes the default light radius applied to tokens created from an image."}
+  event-tx-fn :token-images/change-default-light
+  [_ _ hash light]
+  (if (some? light)
+    [[:db/add [:image/hash hash] :token-image/default-light light]]
+    [[:db/retract [:image/hash hash] :token-image/default-light]]))
+
+(defmethod
   ^{:doc ""}
   event-tx-fn
   :token-images/change-details
@@ -1027,6 +1076,48 @@
              (clj->js sheets)))
     [{:db/ident :root
       :root/character-sheets entries}]))
+
+(defmethod
+  ^{:doc "Creates a blank character sheet in the library."}
+  event-tx-fn :character-sheets/create-blank
+  []
+  [{:db/ident :root
+    :root/character-sheets
+    [{:character-sheet/id (str (random-uuid))
+      :character-sheet/name "New Character"
+      :character-sheet/source "Created in Ogres"
+      :character-sheet/data {:name "New Character"}}]}])
+
+(defmethod
+  ^{:doc "Updates a character sheet and refreshes copies linked to tokens."}
+  event-tx-fn :character-sheets/update
+  [data _ id sheet]
+  (let [entry (ds/entity data [:character-sheet/id id])
+        old-sheet (:character-sheet/data entry)
+        name (trim (:name sheet))
+        linked-images
+        (if (some? old-sheet)
+          (ds/q '[:find [?e ...]
+                  :in $ ?sheet
+                  :where [?e :token-image/character-sheet ?sheet]]
+                data old-sheet)
+          [])
+        linked-tokens
+        (if (some? old-sheet)
+          (ds/q '[:find [?e ...]
+                  :in $ ?sheet
+                  :where [?e :token/character-sheet ?sheet]]
+                data old-sheet)
+          [])]
+    (when (and entry (seq name))
+      (concat
+       [{:db/id (:db/id entry)
+         :character-sheet/name name
+         :character-sheet/data (assoc sheet :name name)}]
+       (for [entity-id linked-images]
+         {:db/id entity-id :token-image/character-sheet (assoc sheet :name name)})
+       (for [entity-id linked-tokens]
+         {:db/id entity-id :token/character-sheet (assoc sheet :name name)})))))
 
 (defmethod
   ^{:doc "Removes a character sheet from the library by id."}
@@ -1160,20 +1251,21 @@
           host :user/camera} :session/host
          conns :session/conns} result
         scale (:camera/scale host)
+        host-scene (:db/id (:camera/scene host))
         center (vec/add point (vec/div (seg/midpoint bounds) scale))]
     (->> (for [[next conn] (sequence (indexed) conns)
                :let [prev (->> (:user/cameras conn)
                                (filter (fn [conn]
                                          (= (:db/id (:camera/scene conn))
-                                            (:db/id (:camera/scene host))))) (first) (:db/id))
+                                            host-scene))) (first) (:db/id))
                      next  (or prev next)
                      point (vec/sub center (vec/div (seg/midpoint (:user/bounds conn)) scale))]]
            [{:db/id (:db/id conn) :user/camera next :user/cameras next}
             {:db/id next
              :camera/point point
              :camera/scale scale
-             :camera/scene (:db/id (:camera/scene host))}])
-         (into [] cat))))
+             :camera/scene host-scene}])
+         (into [[:db/add [:db/ident :session] :session/active-scene host-scene]] cat))))
 
 ;; -- Clipboard --
 (def ^:private clipboard-copy-attrs

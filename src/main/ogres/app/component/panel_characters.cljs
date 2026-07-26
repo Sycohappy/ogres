@@ -1,5 +1,6 @@
 (ns ogres.app.component.panel-characters
   (:require [clojure.string :as str]
+            [ogres.app.component.character-sheet-editor :refer [sheet-editor]]
             [datascript.core :as ds]
             [ogres.app.hooks :as hooks]
             [ogres.app.initiative :as initiative]
@@ -7,10 +8,14 @@
             [uix.core :as uix :refer [defui $]]))
 
 (def ^:private query
-  [{:root/token-images
+  [{:root/user [:user/host]}
+   {:root/token-images
     [:image/hash
      :image/name
+     :image/public
      :token-image/default-label
+     :token-image/default-size
+     :token-image/default-light
      :token-image/character-sheet]}
    {:root/character-sheets
     [:character-sheet/id
@@ -105,6 +110,99 @@
                        (escape-html (str/join " " entries))
                        "</p>")))
          "</section>")))
+
+(def ^:private spell-ordinals
+  {"1" "1st" "2" "2nd" "3" "3rd" "4" "4th" "5" "5th"
+   "6" "6th" "7" "7th" "8" "8th" "9" "9th"})
+
+(defn ^:private spell-level-label [level]
+  (let [level (str level)]
+    (cond
+      (= "0" level) "Cantrips (at will)"
+      (contains? spell-ordinals level) (str (get spell-ordinals level) " level")
+      :else (str "Level " level))))
+
+(defn ^:private spell-level-key [level]
+  (str level))
+
+(defn ^:private spell-level-sort [level]
+  (js/parseInt (spell-level-key level)))
+
+(defn ^:private spell-slots-label [slots]
+  (when (some? slots)
+    (str " (" slots " slot" (when (not= 1 slots) "s") ")")))
+
+(defn ^:private render-spell-level [level data]
+  (when-let [spells (seq (:spells data))]
+    (str "<p class=\"spell-level\"><strong>"
+         (escape-html (spell-level-label level))
+         (escape-html (spell-slots-label (:slots data)))
+         ":</strong> "
+         (escape-html (str/join ", " spells))
+         "</p>")))
+
+(defn ^:private traits-without-spells [traits]
+  (vec (remove #(= "Spells" (:name %)) (or traits []))))
+
+(defn ^:private spell-trait-text [traits]
+  (some (fn [{:keys [name entries]}]
+          (when (= "Spells" name)
+            (str/join " " entries)))
+        (or traits [])))
+
+(defn ^:private render-spellcasting-intro [spellcasting]
+  (when (some #(or (seq (:headerEntries %)) (:ability %)) spellcasting)
+    (str "<section class=\"section spellcasting\">"
+         "<h2>Spellcasting</h2>"
+         (apply str
+                (for [{:keys [name headerEntries ability]} spellcasting
+                      :when (or (seq headerEntries) ability)]
+                  (str (when (and name (not= name "Spellcasting"))
+                         (str "<h3 class=\"spell-block-title\">"
+                              (escape-html name)
+                              "</h3>"))
+                       (when ability
+                         (str "<p class=\"spell-ability\"><em>Spellcasting ability: "
+                              (escape-html (str/upper-case (name ability)))
+                              "</em></p>"))
+                       (apply str
+                              (for [entry (or headerEntries [])]
+                                (str "<p class=\"entry\">"
+                                     (escape-html entry)
+                                     "</p>"))))))
+         "</section>")))
+
+(defn ^:private render-spell-levels [spells]
+  (when (seq spells)
+    (apply str
+           (for [[level data] (sort-by (fn [[k _]] (spell-level-sort k)) spells)]
+             (render-spell-level (spell-level-key level) data)))))
+
+(defn ^:private render-spells-section [spellcasting trait-spells]
+  (let [levels (apply str
+                      (for [{:keys [name spells]} spellcasting
+                            :when (seq spells)]
+                        (str (when (and name (not= name "Spellcasting"))
+                               (str "<h3 class=\"spell-block-title\">"
+                                    (escape-html name)
+                                    "</h3>"))
+                             (render-spell-levels spells))))
+        trait-text (some-> trait-spells str/trim seq)]
+    (when (or (seq levels) trait-text)
+      (str "<section class=\"section spells\">"
+           "<h2>Spells</h2>"
+           levels
+           (when trait-text
+             (str "<p class=\"spell-level\">"
+                  (escape-html trait-text)
+                  "</p>"))
+           "</section>"))))
+
+(defn ^:private render-spell-sections [sheet]
+  (let [spellcasting (or (:spellcasting sheet) [])
+        trait-spells (spell-trait-text (:trait sheet))]
+    (str (or (render-spellcasting-intro spellcasting) "")
+         (or (render-spells-section spellcasting trait-spells) ""))))
 
 (defn ^:private action-chat-body [name description]
   (initiative/action-chat-body name description))
@@ -256,6 +354,10 @@
          ".section{margin-bottom:16px}"
          "h2{margin:0 0 8px;font-size:16px;font-weight:700;border-bottom:1px solid #c4b59a;padding-bottom:4px}"
          ".entry{margin:0 0 8px;font-size:14px}"
+         ".spell-level{margin:0 0 8px;font-size:14px}"
+         ".spell-ability{margin:0 0 8px;font-size:13px;color:#555}"
+         ".spell-block-title{margin:12px 0 6px;font-size:14px;font-weight:700}"
+         ".section.spells{margin-top:16px}"
          ".entry-action{display:block;width:100%;text-align:left;background:transparent;border:1px solid transparent;border-radius:4px;padding:6px 8px;margin:0 -8px 8px;cursor:pointer;font:inherit;color:inherit;line-height:inherit}"
          ".entry-action:hover{background:#e8dcc8;border-color:#c4b59a}"
          "details{margin-top:16px;font-size:13px}"
@@ -278,7 +380,8 @@
          (or (render-info-row "Challenge Rating" (:cr sheet)) "")
          (or (render-info-row "Proficiency Bonus" (:proficiency-bonus sheet)) "")
          "</div>"
-         (or (render-entries "Traits" (:trait sheet)) "")
+         (or (render-entries "Traits" (traits-without-spells (:trait sheet))) "")
+         (or (render-spell-sections sheet) "")
          (or (render-action-section actions) "")
          (or (render-clickable-entry-section "Bonus Actions" bonus bonus-offset) "")
          (or (render-clickable-entry-section "Reactions" reactions reaction-offset) "")
@@ -399,54 +502,191 @@
   (let [dispatch (hooks/use-dispatch)
         result   (hooks/use-query query [:db/ident :root])
         sheets   (:root/character-sheets result)
-        tokens   (:root/token-images result)]
+        host?    (get-in result [:root/user :user/host])
+        tokens   (filter #(or host? (:image/public %)) (:root/token-images result))
+        import!  (hooks/use-document-importer)
+        import-input (uix/use-ref nil)
+        [editing-id set-editing-id] (uix/use-state nil)
+        [import-error set-import-error] (uix/use-state nil)
+        [import-success set-import-success] (uix/use-state nil)]
+    (hooks/use-subscribe
+     :import/error
+     (uix/use-callback
+      (fn [message filename]
+        (set-import-success nil)
+        (set-import-error (str "Failed to import " filename ": " message))) []))
+    (hooks/use-subscribe
+     :import/success
+     (uix/use-callback
+      (fn [import-result]
+        (let [names (when (map? import-result) (:names import-result))
+              count (if (map? import-result) (:count import-result) import-result)]
+          (set-import-error nil)
+          (set-import-success
+           (if (seq names)
+             (str "Imported " count " sheet(s): " (str/join ", " names))
+             (str "Imported " count " sheet(s)."))))) []))
     ($ :.form-help
       ($ :header ($ :h2 "Characters"))
+      ($ :fieldset.fieldset.character-management-import
+        ($ :legend "Add Characters")
+        ($ :div.form-notice
+          ($ :p
+            "Import character sheets from PDF, Markdown, or JSON, or create one from scratch.")
+          ($ :.character-management-actions
+            ($ :button.button.button-neutral
+              {:type "button"
+               :on-click #(.. import-input -current (click))}
+              "Import sheets")
+            ($ :button.button.button-neutral
+              {:type "button"
+               :on-click #(dispatch :character-sheets/create-blank)}
+              "New blank character"))
+          ($ :input
+            {:type "file"
+             :hidden true
+             :accept ".pdf,.md,.markdown,.json"
+             :multiple true
+             :ref import-input
+             :on-change
+             (fn [event]
+               (let [files (.. event -target -files)]
+                 (when (seq files)
+                   (import! files)
+                   (set! (.. event -target -value) ""))))})
+          (when import-error
+            ($ :p.character-management-message
+              {:data-status "error"} import-error))
+          (when import-success
+            ($ :p.character-management-message
+              {:data-status "success"} import-success))))
       ($ :fieldset.fieldset
-        ($ :legend "Token + Sheet Links")
+        ($ :legend "Character Sheets")
+        (if (empty? sheets)
+          ($ :p.form-notice
+            "No character sheets yet. Import a file or create a blank character.")
+          ($ :ul.character-sheet-list
+            (for [{:character-sheet/keys [id name source data] :as entry} sheets
+                  :let [linked-hash
+                        (some (fn [token]
+                                (when (= data (:token-image/character-sheet token))
+                                  (:image/hash token)))
+                              tokens)
+                        editing? (= id editing-id)]]
+              ($ :li.character-sheet-list-item
+                {:key id}
+                ($ :.character-sheet-summary
+                  ($ :div
+                    ($ :strong name)
+                    ($ :p
+                      (str (when (:cr data) (str "CR/Level " (:cr data)))
+                           (when (and (:cr data) source) " · ")
+                           (or source ""))))
+                  ($ :.character-management-actions
+                    ($ :button.button.button-neutral
+                      {:type "button"
+                       :on-click #(set-editing-id (when-not editing? id))}
+                      (if editing? "Close editor" "Edit"))
+                    ($ :button.button.button-neutral
+                      {:type "button"
+                       :on-click #(open-sheet-popout! data (or linked-hash ""))}
+                      "Pop out")
+                    ($ :button.button.button-danger
+                      {:type "button"
+                       :on-click
+                       #(do
+                          (when (= editing-id id) (set-editing-id nil))
+                          (dispatch :character-sheets/remove id))}
+                      "Remove")))
+                (when editing?
+                  ($ sheet-editor
+                    {:id id
+                     :sheet (:character-sheet/data entry)
+                     :on-cancel #(set-editing-id nil)})))))))
+      ($ :fieldset.fieldset
+        ($ :legend "Token Links and Defaults")
         ($ :div.form-notice
           ($ :p {:style {:margin-bottom 8}}
-            "Assign an imported character sheet to each token template. "
-            "You can open the linked sheet in a popout window for reference.")
+            "Link sheets to token images and choose the defaults used for newly placed tokens.")
           (if (empty? tokens)
             ($ :p "No token images yet. Upload token images in the Tokens tab first.")
-            ($ :ul {:style {:margin-top 8 :padding-left 0 :list-style "none"}}
+            ($ :ul.character-token-list
               (for [token tokens
                     :let [sheet (:token-image/character-sheet token)
                           selected-id (some (fn [{:character-sheet/keys [id data]}]
                                               (when (= data sheet) (str id))) sheets)]]
-                ($ :li
-                  {:key (:image/hash token)
-                   :style {:display "grid"
-                           :grid-template-columns "1fr auto auto"
-                           :gap 8
-                           :align-items "center"
-                           :padding "6px 0"
-                           :border-bottom "1px solid var(--color-neutral-200)"}}
-                  ($ :div
+                ($ :li.character-token-list-item
+                  {:key (:image/hash token)}
+                  ($ :.character-token-heading
                     ($ :strong (label-for-token token))
                     ($ :p {:style {:margin 0 :opacity 0.8}}
                       (if sheet
                         (str "Linked: " (label-for-sheet sheet))
                         "No linked character sheet")))
-                  ($ :select.text.text-ghost
-                    {:value (or selected-id "")
-                     :disabled (empty? sheets)
-                     :on-change
-                     (fn [event]
-                       (let [id (.. event -target -value)
-                             selected (first (filter #(= id (str (:character-sheet/id %))) sheets))]
-                         (dispatch :token-images/change-character-sheet
-                                   (:image/hash token)
-                                   (:character-sheet/data selected))))}
-                    ($ :option {:value ""} "No sheet")
-                    (for [{:character-sheet/keys [id name data source]} sheets]
-                      ($ :option {:key (str id) :value (str id)}
-                        (str name
-                             (when (:cr data) (str " (CR " (:cr data) ")"))
-                             (when source (str " - " source))))))
+                  ($ :.character-token-controls
+                    ($ :label.character-editor-field.character-editor-field-wide
+                      ($ :span "Character sheet")
+                      ($ :select.text
+                        {:value (or selected-id "")
+                         :disabled (empty? sheets)
+                         :on-change
+                         (fn [event]
+                           (let [id (.. event -target -value)
+                                 selected
+                                 (first
+                                  (filter #(= id (str (:character-sheet/id %))) sheets))]
+                             (dispatch :token-images/change-character-sheet
+                                       (:image/hash token)
+                                       (:character-sheet/data selected))))}
+                        ($ :option {:value ""} "No sheet")
+                        (for [{:character-sheet/keys [id name data source]} sheets]
+                          ($ :option {:key (str id) :value (str id)}
+                            (str name
+                                 (when (:cr data) (str " (CR " (:cr data) ")"))
+                                 (when source (str " - " source)))))))
+                    ($ :label.character-editor-field
+                      ($ :span "Default label")
+                      ($ :input.text
+                        {:type "text"
+                         :default-value (:token-image/default-label token)
+                         :on-blur
+                         #(dispatch :token-images/change-default-label
+                                    (:image/hash token) (.. % -target -value))}))
+                    ($ :label.character-editor-field
+                      ($ :span "Default size")
+                      ($ :input.text
+                        {:type "number" :min 1 :step 1
+                         :default-value (:token-image/default-size token)
+                         :placeholder "5"
+                         :on-blur
+                         #(let [value (.. % -target -value)]
+                            (dispatch :token-images/change-default-size
+                                      (:image/hash token)
+                                      (when-not (str/blank? value)
+                                        (js/Number value))))}))
+                    ($ :label.character-editor-field
+                      ($ :span "Default light")
+                      ($ :input.text
+                        {:type "number" :min 0 :step 1
+                         :default-value (:token-image/default-light token)
+                         :placeholder "15"
+                         :on-blur
+                         #(let [value (.. % -target -value)]
+                            (dispatch :token-images/change-default-light
+                                      (:image/hash token)
+                                      (when-not (str/blank? value)
+                                        (js/Number value))))}))
+                    ($ :label.character-token-public
+                      ($ :input
+                        {:type "checkbox"
+                         :checked (true? (:image/public token))
+                         :on-change
+                         #(dispatch :token-images/change-scope
+                                    (:image/hash token)
+                                    (.. % -target -checked))})
+                      "Public"))
                   ($ :button.button.button-neutral
                     {:type "button"
                      :disabled (nil? sheet)
                      :on-click #(open-sheet-popout! sheet (:image/hash token))}
-                    "Open popout"))))))))))
+                    "Open linked sheet"))))))))))

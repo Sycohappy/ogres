@@ -15,7 +15,12 @@ services:
         SERVER_SOCKET_URL: "ws://127.0.0.1:8080/ws"
     volumes:
       - frontend:/out
-    command: ["sh", "-c", "cp -a /build/. /out/ && echo frontend assets synced"]
+    command:
+      [
+        "sh",
+        "-c",
+        "mkdir -p /out/web/release /out/site && cp -a /build/web/release/. /out/web/release/ && if [ -d /build/site ]; then cp -a /build/site/. /out/site/; fi && echo frontend assets synced",
+      ]
     ports:
       # Port used for hot reloading in shadow-cljs's watch mode
       - "9630:9630"

@@ -83,7 +83,12 @@
     :session/join
     (let [user (ds/entity @conn [:db/ident :user])]
       (if (:user/host user)
-        (let [tx-data
+        (let [session (ds/entity @conn [:db/ident :session])
+              host-camera (:user/camera user)
+              host-scene (:db/id (:camera/scene host-camera))
+              scene (or (:db/id (:session/active-scene session)) host-scene)
+              same-scene? (= scene host-scene)
+              tx-data
               [{:user/uuid (:uuid data)
                 :user/host false
                 :user/ready true
@@ -91,14 +96,14 @@
                 :user/cameras -1
                 :session/status :connected
                 :user/camera
-                (let [{{point :camera/point
-                        scale :camera/scale
-                        {scene :db/id} :camera/scene}
-                       :user/camera} user]
-                  {:db/id -1
-                   :camera/scene scene
-                   :camera/point (or point vec/zero)
-                   :camera/scale (or scale 1)})}
+                {:db/id -1
+                 :camera/scene scene
+                 :camera/point (if same-scene?
+                                 (or (:camera/point host-camera) vec/zero)
+                                 vec/zero)
+                 :camera/scale (if same-scene?
+                                 (or (:camera/scale host-camera) 1)
+                                 1)}}
                [:db/add [:db/ident :session] :session/host [:db/ident :user]]
                [:db/add [:db/ident :session] :session/conns [:user/uuid (:uuid data)]]]
               report (ds/transact! conn tx-data)

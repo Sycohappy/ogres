@@ -22,12 +22,18 @@
     [:db/id
      :camera/label
      {:camera/scene
-      [{:scene/image [:image/name]}]}]}])
+      [:db/id
+       {:scene/image [:image/name]}]}]}])
+
+(def ^:private query-session
+  [{:session/active-scene [:db/id]}])
 
 (defui scenes []
   (let [dispatch (hooks/use-dispatch)
         {current :user/camera
-         cameras :user/cameras} (hooks/use-query query)]
+         cameras :user/cameras} (hooks/use-query query)
+        session (hooks/use-query query-session [:db/ident :session])
+        active-id (:db/id (:session/active-scene session))]
     (hooks/use-shortcut ["delete" "backspace"]
       (uix/use-callback
        (fn [event]
@@ -38,8 +44,13 @@
                (dispatch :scenes/remove id))))) [dispatch cameras]))
     ($ :ul.scenes {:role "tablist"}
       (for [{id :db/id :as camera} cameras
-            :let [selected (= id (:db/id current))]]
-        ($ :li.scenes-scene {:key id :role "tab" :aria-selected selected}
+            :let [selected (= id (:db/id current))
+                  active (= active-id (:db/id (:camera/scene camera)))]]
+        ($ :li.scenes-scene
+          {:key id
+           :role "tab"
+           :aria-selected selected
+           :data-session-active active}
           ($ :label
             ($ :input
               {:type "radio"
@@ -49,6 +60,14 @@
                :on-change (fn [event] (dispatch :scenes/change (js/Number (.. event -target -value))))})
             ($ :.scenes-label
               (render-scene-name camera))
+            (if-not active
+              ($ :.scenes-activate
+                {:title "Set as the active scene for players."
+                 :on-click
+                 (fn [event]
+                   (.preventDefault event)
+                   (dispatch :scenes/activate id))}
+                ($ icon {:name "people-fill" :size 16})))
             ($ :.scenes-remove
               {:on-click
                (fn []

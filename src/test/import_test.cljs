@@ -265,3 +265,61 @@
            (first (get-in sheet [:trait 0 :entries]))))
     (is (pos? (count (:action sheet))))
     (is (= "Divine Strike" (:name (first (:action sheet)))))))
+
+(def ^:private sample-visual-sheet
+  (str/join "\n"
+            ["\"Flambel the Magnificent\" - Andain Belladum"
+             "0" "4" "0" "0"
+             "Charlatan" "Bard" "13" "24" "4d8" "Human" "College of Lore"
+             "+2" "30ft" "5'8\"" "12"
+             "Bardic Inspiration 1d6"
+             "Expertise: Deception and Performance"
+             "Jack of All Trades"
+             "Cutting Words"
+             "Charisma"
+             "Vicious Mockery" "Minor Illusion" "Healing Word"
+             "Common, Elvish, Goblin"]))
+
+(deftest test-parse-visual-character-sheet
+  (let [{:keys [valid? sheets errors]} (parser/parse-pdf-text sample-visual-sheet)
+        sheet (first sheets)]
+    (is valid? (str "errors: " errors))
+    (is (= "Flambel the Magnificent" (:name sheet)))
+    (is (= [12] (:ac sheet)))
+    (is (= 24 (get-in sheet [:hp :average])))
+    (is (= "4d8" (get-in sheet [:hp :formula])))
+    (is (= "human" (:subtype sheet)))
+    (is (= "humanoid" (:type sheet)))
+    (is (= 30 (get-in sheet [:speed :walk])))
+    (is (= "+2" (:proficiency-bonus sheet)))
+    (is (= "4" (:cr sheet)))
+    (is (pos? (count (:trait sheet))))
+    (is (= "Bardic Inspiration 1d6" (:name (first (:trait sheet)))))
+    (is (= ["Common" "Elvish" "Goblin"] (:languages sheet)))
+    (is (some #(= "Spells" (:name %)) (:trait sheet)))))
+
+(deftest test-parse-json-spellcasting
+  (let [json (str "{"
+                  "\"name\":\"Garuun\","
+                  "\"ac\":[13],"
+                  "\"hp\":{\"average\":53,\"formula\":\"6d8 + 18\"},"
+                  "\"str\":10,"
+                  "\"spellcasting\":[{\"name\":\"Spellcasting\","
+                  "\"headerEntries\":[\"Wisdom is his spellcasting ability.\"],"
+                  "\"ability\":\"wis\","
+                  "\"spells\":{\"0\":{\"spells\":[\"Guidance\",\"Druidcraft\"]},"
+                  "\"1\":{\"slots\":4,\"spells\":[\"Cure Wounds\"]}}}]"
+                  "}")
+        sheet (first (:sheets (parser/parse-json-text json)))
+        block (first (:spellcasting sheet))
+        cantrips (get-in block [:spells :0 :spells]
+                    (get-in block [:spells "0" :spells]))
+        first-level (get-in block [:spells :1 :spells]
+                      (get-in block [:spells "1" :spells]))]
+    (is (= "Garuun" (:name sheet)))
+    (is (= "Spellcasting" (:name block)))
+    (is (= :wis (:ability block)))
+    (is (= ["Guidance" "Druidcraft"] cantrips))
+    (is (= 4 (or (get-in block [:spells :1 :slots])
+                 (get-in block [:spells "1" :slots]))))
+    (is (= ["Cure Wounds"] first-level))))

@@ -272,3 +272,10 @@
             :else
             ($ :button.button.button-neutral
               {:on-click on-next} "Next")))))
+
+(defui ^:memo sidebar []
+  ($ :.initiative-sidebar
+    ($ :.initiative-sidebar-body
+      ($ panel))
+    ($ :.initiative-sidebar-footer
+      ($ actions))))

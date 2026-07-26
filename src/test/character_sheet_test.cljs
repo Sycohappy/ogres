@@ -20,8 +20,30 @@
 (deftest test-attack-modifier
   (is (= 11 (initiative/attack-modifier "*Melee Attack Roll:* +11, reach 5 ft.")))
   (is (= 7 (initiative/attack-modifier "Ranged Attack Roll: +7, range 60/240 ft.")))
+  (is (= 6 (initiative/attack-modifier
+            "Melee Spell Attack: +6 to hit, reach 5 ft., one target.")))
+  (is (= 6 (initiative/attack-modifier
+            "Ranged Spell Attack: +6 to hit, range 60 ft., one target.")))
+  (is (= 10 (initiative/attack-modifier
+             "Melee Weapon Attack: +10 to hit, reach 5 ft., one target.")))
+  (is (= 6 (initiative/attack-modifier
+            "*Melee Weapon Attack:* +6 to hit, reach 5 ft., one target. *Hit:* 1d8 bludgeoning damage.")))
   (is (nil? (initiative/attack-modifier "*Constitution Saving Throw:* DC 18")))
   (is (nil? (initiative/attack-modifier "The yeti makes two attacks"))))
+
+(deftest test-action-chat-body-spell-attack
+  (let [body (initiative/action-chat-body
+              "Shillelagh"
+              "Melee Spell Attack: +6 to hit, reach 5 ft., one target.")]
+    (is (str/starts-with? body "Shillelagh. Melee Spell Attack: +6"))
+    (is (re-find #"— \d+ \(d20 \+6\)$" body))))
+
+(deftest test-action-chat-body-markdown-weapon-attack
+  (let [body (initiative/action-chat-body
+              "Staff of Necrotic"
+              "*Melee Weapon Attack:* +6 to hit, reach 5 ft., one target. *Hit:* 1d8 bludgeoning damage.")]
+    (is (str/starts-with? body "Staff of Necrotic."))
+    (is (re-find #"— \d+ \(d20 \+6\)$" body))))
 
 (deftest test-action-chat-body-attack-roll
   (let [body (initiative/action-chat-body
@@ -72,6 +94,43 @@
       (is (= "Abominable Yeti" (:character-sheet/name (first sheets))))
       (is (= sample-sheet (:character-sheet/data (first sheets)))))))
 
+(deftest test-create-blank-character-sheet
+  (let [conn (ds/conn-from-db (initial-data true))]
+    (dispatch conn :character-sheets/create-blank)
+    (let [sheet (first (:root/character-sheets
+                        (entity @conn [:db/ident :root])))]
+      (is (string? (:character-sheet/id sheet)))
+      (is (= "New Character" (:character-sheet/name sheet)))
+      (is (= {:name "New Character"} (:character-sheet/data sheet))))))
+
+(deftest test-update-character-sheet-refreshes-linked-copies
+  (let [conn (ds/conn-from-db (initial-data true))
+        id "sheet-1"
+        updated (assoc sample-sheet :name "Frost Yeti" :ac [16])
+        scene-id (:db/id (:camera/scene
+                          (:user/camera (entity @conn [:db/ident :user]))))]
+    (transact! conn
+               [{:db/ident :root
+                 :root/character-sheets
+                 [{:character-sheet/id id
+                   :character-sheet/name (:name sample-sheet)
+                   :character-sheet/data sample-sheet}]
+                 :root/token-images
+                 [{:image/hash "linked"
+                   :token-image/character-sheet sample-sheet}]}
+                {:db/id -10
+                 :object/type :token/token
+                 :token/character-sheet sample-sheet}
+                [:db/add scene-id :scene/tokens -10]])
+    (dispatch conn :character-sheets/update id updated)
+    (let [entry (entity @conn [:character-sheet/id id])
+          image (entity @conn [:image/hash "linked"])
+          token (first (:scene/tokens (entity @conn scene-id)))]
+      (is (= "Frost Yeti" (:character-sheet/name entry)))
+      (is (= updated (:character-sheet/data entry)))
+      (is (= updated (:token-image/character-sheet image)))
+      (is (= updated (:token/character-sheet token))))))
+
 (deftest test-token-image-character-sheet-copy
   (let [conn (ds/conn-from-db (initial-data true))]
     (transact! conn
@@ -85,6 +144,30 @@
                   (:camera/scene (:user/camera (entity @conn [:db/ident :user]))))]
       (is (= 1 (count tokens)))
       (is (= sample-sheet (:token/character-sheet (first tokens)))))))
+
+(deftest test-token-image-size-and-light-defaults
+  (let [conn (ds/conn-from-db (initial-data true))]
+    (transact! conn
+               [{:db/ident :root
+                 :root/token-images [{:image/hash "defaults"
+                                      :image/name "defaults.png"}]}])
+    (dispatch conn :token-images/change-default-size "defaults" 10)
+    (dispatch conn :token-images/change-default-light "defaults" 30)
+    (dispatch conn :token/create (Vec2. 100 100) "defaults")
+    (let [image (entity @conn [:image/hash "defaults"])
+          token (first
+                 (:scene/tokens
+                  (:camera/scene
+                   (:user/camera (entity @conn [:db/ident :user])))))]
+      (is (= 10 (:token-image/default-size image)))
+      (is (= 30 (:token-image/default-light image)))
+      (is (= 10 (:token/size token)))
+      (is (= 30 (:token/light token))))
+    (dispatch conn :token-images/change-default-size "defaults" nil)
+    (dispatch conn :token-images/change-default-light "defaults" nil)
+    (let [image (entity @conn [:image/hash "defaults"])]
+      (is (nil? (:token-image/default-size image)))
+      (is (nil? (:token-image/default-light image))))))
 
 (deftest test-clipboard-copies-character-sheet
   (let [conn (ds/conn-from-db (initial-data true))

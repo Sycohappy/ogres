@@ -2,6 +2,7 @@
   (:require [ogres.app.hooks :as hooks]
             [ogres.app.component :refer [icon]]
             [ogres.app.component.panel :as panel]
+            [ogres.app.component.panel-initiative :as initiative]
             [ogres.app.component.scene :refer [scene]]
             [ogres.app.component.scenes :refer [scenes]]
             [ogres.app.component.toolbar :refer [toolbar]]
@@ -25,6 +26,7 @@
     (cond (and host ready)
           ($ :.layout
             {:data-user "host" :data-expanded expanded}
+            ($ :.layout-initiative ($ initiative/sidebar))
             ($ :.layout-scenes  ($ scenes))
             ($ :.layout-scene {:ref node}
               ($ scene))
@@ -34,6 +36,7 @@
           (and (not host) (= status :connected) ready)
           ($ :.layout
             {:data-user "conn" :data-expanded expanded}
+            ($ :.layout-initiative ($ initiative/sidebar))
             ($ :.layout-scene {:ref node}
               ($ scene))
             ($ :.layout-toolbar ($ toolbar))

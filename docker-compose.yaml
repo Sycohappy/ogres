@@ -50,6 +50,10 @@ services:
         # VERSION: "dev"
         # The URL to the server's websocket, which will be proxied by nginx
         SERVER_SOCKET_URL: "http://backend:8090/ws"
+    environment:
+      # Used by docker-nginx.template /play redirect (?r=…)
+      RELEASE_VERSION: "dev"
+      SERVER_SOCKET_URL: "http://backend:8090/ws"
     volumes:
       - ./deploy/docker-nginx.template:/etc/nginx/templates/default.conf.template:ro
       - frontend:/usr/share/nginx/app

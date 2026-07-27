@@ -1,0 +1,172 @@
+{
+  "senses": [
+    "Darkvision 60 ft.",
+    "passive Perception 10"
+  ],
+  "skill": {
+    "athletics": "+6",
+    "intimidation": "+6",
+    "performance": "+6",
+    "persuasion": "+6",
+    "religion": "+2"
+  },
+  "ac": [
+    {
+      "ac": 21,
+      "from": [
+        "Plate of Knight's Fellowship",
+        "Shield +1"
+      ]
+    }
+  ],
+  "int": 8,
+  "speed": {
+    "walk": 30,
+    "fly": {
+      "number": 30,
+      "condition": "while Draconic Flight is active"
+    }
+  },
+  "name": "Argamon Flamebound",
+  "alignment": [
+    "L",
+    "E"
+  ],
+  "cha": 16,
+  "hasToken": true,
+  "cr": "6",
+  "resist": [
+    "fire"
+  ],
+  "type": "humanoid",
+  "proficiency-bonus": "+3",
+  "size": [
+    "M"
+  ],
+  "passive": 10,
+  "hasFluff": true,
+  "str": 17,
+  "bonus": [
+    {
+      "name": "Lay on Hands",
+      "entries": [
+        "Argamon touches a creature and restores up to 25 hit points from his healing pool. He can instead expend 5 points from the pool to remove the Poisoned condition from the target. The pool replenishes when he finishes a long rest."
+      ]
+    },
+    {
+      "name": "Divine Sense",
+      "entries": [
+        "For 10 minutes, or until Argamon has the Incapacitated condition, he knows the location and creature type of Celestials, Fiends, and Undead within 60 feet. He also detects consecrated and desecrated places and objects within that range."
+      ]
+    },
+    {
+      "name": "Draconic Flight (1/Long Rest)",
+      "entries": [
+        "Argamon sprouts spectral wings for 10 minutes and gains a flying speed of 30 feet. The effect ends early if he retracts the wings or gains the Incapacitated condition."
+      ]
+    },
+    {
+      "name": "Summon Knight's Fellowship Spirit (1/Day)",
+      "entries": [
+        "Argamon summons a warrior spirit in an unoccupied space within 30 feet. The spirit uses the knight stat block, shares Argamon's initiative, acts immediately after him, and obeys his commands without requiring an action. It lasts for 1 minute or until reduced to 0 hit points."
+      ]
+    }
+  ],
+  "trait": [
+    {
+      "name": "Aura of Protection",
+      "entries": [
+        "Argamon and his allies within 10 feet of him gain a +3 bonus to saving throws. The aura is inactive while Argamon has the Incapacitated condition."
+      ]
+    },
+    {
+      "name": "Spellcasting",
+      "entries": [
+        "Argamon's spellcasting ability is Charisma (spell save DC 14, +6 to hit with spell attacks). He has the following Paladin spells prepared: 1st level (4 slots): armor of Agathys, command, compelled duel, divine smite, shield of faith, wrathful smite; 2nd level (2 slots): aid, find steed, hold person, shining smite, spiritual weapon, warding bond."
+      ]
+    },
+    {
+      "name": "Supernatural Readiness",
+      "entries": [
+        "While Argamon is attuned to and carrying his Longsword of Warning, he has advantage on initiative rolls. Allies within 30 feet of him also gain this benefit, and creatures sleeping naturally in the area awaken when combat begins."
+      ]
+    },
+    {
+      "name": "Fire Resistance",
+      "entries": [
+        "Argamon has resistance to fire damage."
+      ]
+    },
+    {
+      "name": "Paladin's Smite (1/Day)",
+      "entries": [
+        "Argamon can cast divine smite once without expending a spell slot. He regains this use when he finishes a long rest."
+      ]
+    },
+    {
+      "name": "Faithful Steed (1/Day)",
+      "entries": [
+        "Argamon can cast find steed without expending a spell slot. He regains this use when he finishes a long rest."
+      ]
+    }
+  ],
+  "con": 19,
+  "dex": 12,
+  "action": [
+    {
+      "name": "Multiattack",
+      "entries": [
+        "Argamon makes two attacks using Warhammer +1 or Javelin. He can replace one attack with Breath Weapon."
+      ]
+    },
+    {
+      "name": "Warhammer +1",
+      "entries": [
+        "*Melee Attack Roll:* +7, reach 5 ft., one target. *Hit:* 8 (1d8 + 4) bludgeoning damage, or 9 (1d10 + 4) bludgeoning damage if used with two hands. On a hit, Argamon can push a Large or smaller target up to 10 feet straight away from himself."
+      ]
+    },
+    {
+      "name": "Javelin",
+      "entries": [
+        "*Melee or Ranged Attack Roll:* +6, reach 5 ft. or range 30/120 ft., one target. *Hit:* 6 (1d6 + 3) piercing damage. On a hit, Argamon can reduce the target's speed by 10 feet until the start of his next turn."
+      ]
+    },
+    {
+      "name": "Breath Weapon (3/Long Rest)",
+      "entries": [
+        "Argamon exhales fire in either a 15-foot cone or a 30-foot-long, 5-foot-wide line. Each creature in that area must make a DC 14 Dexterity saving throw, taking 11 (2d10) fire damage on a failed save, or half as much damage on a successful one."
+      ]
+    },
+    {
+      "name": "Dragon Fear",
+      "entries": [
+        "Argamon expends one use of Breath Weapon and roars. Each creature of his choice within 30 feet that can see or hear him must succeed on a DC 14 Wisdom saving throw or have the Frightened condition for 1 minute. A frightened creature repeats the save whenever it takes damage, ending the effect on itself on a success."
+      ]
+    },
+    {
+      "name": "Conquering Presence",
+      "entries": [
+        "Argamon uses Channel Divinity. Each creature of his choice that he can see within 30 feet must succeed on a DC 14 Wisdom saving throw or have the Frightened condition for 1 minute. A frightened creature repeats the save at the end of each of its turns, ending the effect on itself on a success."
+      ]
+    }
+  ],
+  "hp": {
+    "average": 64,
+    "formula": "6d10+30"
+  },
+  "wis": 10,
+  "languages": [
+    "Common",
+    "Draconic",
+    "Infernal"
+  ],
+  "reaction": [
+    {
+      "name": "Interception",
+      "entries": [
+        "When a creature Argamon can see hits a target other than Argamon within 5 feet of him, Argamon reduces the damage by 1d10 + 3, to a minimum of 0. He must be wielding a shield or a simple or martial weapon."
+      ]
+    }
+  ],
+  "subtype": "red dragonborn"
+}

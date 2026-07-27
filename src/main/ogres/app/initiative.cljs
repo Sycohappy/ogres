@@ -58,43 +58,75 @@
   [text]
   (or (attack-message? text) (saving-throw-message? text)))
 
+(def ^:private non-damage-type-words
+  #{"damage" "plus" "or" "and" "on" "with" "if" "to" "the" "a" "an"
+    "each" "taking" "deals" "deal"})
+
+(defn ^:private damage-formula
+  [{:keys [count sides modifier]}]
+  (str count "d" sides (when (pos? modifier) (str "+" modifier))))
+
+(defn damage-button-label
+  "Short label for a chat damage button, e.g. \"1d8+4 bludgeoning\"."
+  [{:keys [type] :as expr}]
+  (let [formula (damage-formula expr)]
+    (if (str/blank? type)
+      formula
+      (str formula " " (str/lower-case type)))))
+
 (defn parse-damage-expressions
-  "Parses parenthesized dice expressions such as (2d6 + 7) from attack or saving throw text."
+  "Parses parenthesized dice expressions such as (2d6 + 7) from attack or saving throw text.
+  When multiple expressions are present (versatile weapons, multi-type hits), each is returned
+  separately so the UI can offer one damage button per expression."
   [text]
   (when (damage-message? text)
     (vec
-     (for [[_ count sides mod] (re-seq #"\((\d+)d(\d+)(?:\s*\+\s*(\d+))?\)" text)]
-       {:count (js/parseInt count 10)
-        :sides (js/parseInt sides 10)
-        :modifier (or (parse-modifier mod) 0)}))))
+     (for [[_ count sides mod type]
+           (re-seq #"\((\d+)d(\d+)(?:\s*\+\s*(\d+))?\)(?:\s+([A-Za-z]+))?" text)]
+       (cond-> {:count (js/parseInt count 10)
+                :sides (js/parseInt sides 10)
+                :modifier (or (parse-modifier mod) 0)}
+         (and (some? type)
+              (not (contains? non-damage-type-words (str/lower-case type))))
+         (assoc :type type))))))
 
-(defn roll-damage [text]
+(defn ^:private roll-damage-expression
+  [{:keys [count sides modifier] :as expr}]
+  (let [rolls (vec (repeatedly count #(inc (rand-int sides))))
+        total (+ (reduce + rolls) modifier)]
+    (assoc expr :rolls rolls :total total)))
+
+(defn roll-damage
+  "Rolls every parsed damage expression in text. Prefer damage-chat-body with an index
+  when the caller intends a single button press."
+  [text]
   (when-let [exprs (seq (parse-damage-expressions text))]
-    (mapv
-     (fn [{:keys [count sides modifier]}]
-       (let [rolls (vec (repeatedly count #(inc (rand-int sides))))
-             total (+ (reduce + rolls) modifier)]
-         {:count count :sides sides :modifier modifier :rolls rolls :total total}))
-     exprs)))
+    (mapv roll-damage-expression exprs)))
+
+(defn ^:private action-name-from-body [attack-body]
+  (or (when (string? attack-body)
+        (some-> (first (str/split attack-body #"\.| — " 2))
+                str/trim))
+      "Action"))
 
 (defn damage-chat-body
-  "Rolls damage dice from an attack or saving throw chat message and returns follow-up text."
-  [attack-body]
-  (when-let [results (seq (roll-damage attack-body))]
-    (let [name (or (when (string? attack-body)
-                     (some-> (first (str/split attack-body #"\.| — " 2))
-                             str/trim))
-                   "Action")
-          grand-total (reduce + (map :total results))
-          parts (mapv
-                 (fn [{:keys [count sides modifier rolls total]}]
-                   (str count "d" sides
-                        (when (pos? modifier) (str "+" modifier))
-                        ": " total
-                        (when (> count 1)
-                          (str " [" (str/join "+" rolls) "]"))))
-                 results)]
-      (str name " damage — " grand-total " (" (str/join ", " parts) ")"))))
+  "Rolls one damage expression from an attack or saving throw chat message.
+  index selects which parsed expression to roll (one button → one expression)."
+  ([attack-body]
+   (damage-chat-body attack-body 0))
+  ([attack-body index]
+   (when-let [exprs (parse-damage-expressions attack-body)]
+     (when-let [expr (get exprs index)]
+       (let [{:keys [count rolls total type] :as result}
+             (roll-damage-expression expr)
+             name (action-name-from-body attack-body)
+             formula (damage-formula result)
+             detail (str formula ": " total
+                         (when (> count 1)
+                           (str " [" (str/join "+" rolls) "]")))
+             type-suffix (when-not (str/blank? type)
+                           (str " " (str/lower-case type)))]
+         (str name " damage" type-suffix " — " total " (" detail ")"))))))
 
 (defn action-chat-body
   "Builds chat text for a sheet action, rolling d20 + modifier for attacks."

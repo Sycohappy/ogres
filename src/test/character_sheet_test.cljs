@@ -61,28 +61,54 @@
 (deftest test-parse-damage-expressions
   (let [body (str "Claw. *Melee Attack Roll:* +11, reach 5 ft. *Hit:* 14 (2d6 + 7) Slashing "
                   "damage plus 7 (2d6) Cold damage. — 17 (d20 +11)")]
-    (is (= [{:count 2 :sides 6 :modifier 7}
-            {:count 2 :sides 6 :modifier 0}]
+    (is (= [{:count 2 :sides 6 :modifier 7 :type "Slashing"}
+            {:count 2 :sides 6 :modifier 0 :type "Cold"}]
            (initiative/parse-damage-expressions body)))
+    (is (= "2d6+7 slashing" (initiative/damage-button-label (first (initiative/parse-damage-expressions body)))))
+    (is (= "2d6 cold" (initiative/damage-button-label (second (initiative/parse-damage-expressions body)))))
     (is (initiative/attack-message? body))
     (is (not (initiative/attack-message? "hello")))))
 
+(deftest test-parse-versatile-weapon-damage
+  (let [body (str "Warhammer +1. *Melee Attack Roll:* +7, reach 5 ft., one target. "
+                  "*Hit:* 8 (1d8 + 4) bludgeoning damage, or 9 (1d10 + 4) bludgeoning "
+                  "damage if used with two hands. — 15 (d20 +7)")
+        exprs (initiative/parse-damage-expressions body)]
+    (is (= [{:count 1 :sides 8 :modifier 4 :type "bludgeoning"}
+            {:count 1 :sides 10 :modifier 4 :type "bludgeoning"}]
+           exprs))
+    (is (= "1d8+4 bludgeoning" (initiative/damage-button-label (first exprs))))
+    (is (= "1d10+4 bludgeoning" (initiative/damage-button-label (second exprs))))))
+
 (deftest test-damage-chat-body-format
   (let [body (str "Claw. *Melee Attack Roll:* +11. *Hit:* 14 (2d6 + 7) Slashing damage. — 17 (d20 +11)")
-        result (initiative/damage-chat-body body)]
+        result (initiative/damage-chat-body body 0)]
     (is (string? result))
-    (is (str/starts-with? result "Claw damage — "))
+    (is (str/starts-with? result "Claw damage slashing — "))
     (is (re-find #"2d6\+7:" result))))
+
+(deftest test-damage-chat-body-selects-index
+  (let [body (str "Claw. *Melee Attack Roll:* +11. *Hit:* 14 (2d6 + 7) Slashing "
+                  "damage plus 7 (2d6) Cold damage. — 17 (d20 +11)")
+        slash (initiative/damage-chat-body body 0)
+        cold (initiative/damage-chat-body body 1)]
+    (is (re-find #"2d6\+7:" slash))
+    (is (str/includes? slash "slashing"))
+    (is (not (str/includes? slash "cold")))
+    (is (re-find #"2d6:" cold))
+    (is (str/includes? cold "cold"))
+    (is (not (re-find #"2d6\+7:" cold)))
+    (is (nil? (initiative/damage-chat-body body 2)))))
 
 (deftest test-saving-throw-damage
   (let [body "Chilling Gaze. *Constitution Saving Throw:* DC 18. *Failure:* 21 (6d6) Cold damage."]
     (is (initiative/saving-throw-message? body))
     (is (initiative/damage-message? body))
-    (is (= [{:count 6 :sides 6 :modifier 0}]
+    (is (= [{:count 6 :sides 6 :modifier 0 :type "Cold"}]
            (initiative/parse-damage-expressions body)))
-    (let [result (initiative/damage-chat-body body)]
+    (let [result (initiative/damage-chat-body body 0)]
       (is (string? result))
-      (is (str/starts-with? result "Chilling Gaze damage — "))
+      (is (str/starts-with? result "Chilling Gaze damage cold — "))
       (is (re-find #"6d6:" result)))))
 
 (deftest test-import-character-sheet

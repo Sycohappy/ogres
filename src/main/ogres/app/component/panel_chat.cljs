@@ -54,9 +54,9 @@
         whisper? (some? dst)
         outgoing? (= src self-uuid)
         incoming-whisper? (and whisper? (= dst self-uuid) (not outgoing?))
-        damage?
-        (and connected?
-             (seq (initiative/parse-damage-expressions body)))]
+        damage-exprs (when connected?
+                       (initiative/parse-damage-expressions body))
+        multi-damage? (> (count damage-exprs) 1)]
     ($ :li.chat-message
       {:data-whisper whisper?
        :data-outgoing outgoing?}
@@ -71,16 +71,20 @@
           ($ :strong.chat-message-sender (user-label sender))
           ($ :span.chat-message-time (format-time time)))
         ($ :p.chat-message-body body)
-        (when damage?
+        (when (seq damage-exprs)
           ($ :div.chat-message-actions
-            ($ :button.button.button-neutral.chat-damage-btn
-              {:type "button"
-               :on-click
-               (fn [_]
-                 (when-let [msg (initiative/damage-chat-body body)]
-                   (dispatch :chat/send (random-uuid) msg nil (js/Date.now))))
-               :title "Roll hit damage dice"}
-              "Damage")))))))
+            (for [[idx expr] (map-indexed vector damage-exprs)]
+              ($ :button.button.button-neutral.chat-damage-btn
+                {:key idx
+                 :type "button"
+                 :on-click
+                 (fn [_]
+                   (when-let [msg (initiative/damage-chat-body body idx)]
+                     (dispatch :chat/send (random-uuid) msg nil (js/Date.now))))
+                 :title (str "Roll " (initiative/damage-button-label expr))}
+                (if multi-damage?
+                  (initiative/damage-button-label expr)
+                  "Damage")))))))))
 
 (defui ^:memo panel []
   (let [result (hooks/use-query query [:db/ident :root])

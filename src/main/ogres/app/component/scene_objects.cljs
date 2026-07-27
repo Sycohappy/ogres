@@ -477,6 +477,7 @@
            [:token/size :default 5]
            [:token/light :default 15]
            [:token/aura-radius :default 0]
+           :token/auras
            {:token/image [:token-image/url :image/hash :image/public :token-image/character-sheet]}
            :token/character-sheet
            {:scene/_initiative [:db/id :initiative/turn]}]}

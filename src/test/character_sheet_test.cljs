@@ -174,6 +174,85 @@
       (is (= 0 (sheet/resource-spent sheet "lay-on-hands")))
       (is (= 64 (get-in sheet [:runtime :hp :current]))))))
 
+(deftest test-change-hp-temp-first-and-token-health
+  (let [conn (ds/conn-from-db (initial-data true))
+        id "sheet-hp"
+        data (-> sample-v2-sheet
+                 (assoc-in [:runtime :hp] {:current 50 :temp 5}))
+        scene-id (:db/id (:camera/scene
+                          (:user/camera (entity @conn [:db/ident :user]))))]
+    (transact! conn
+               [{:db/ident :root
+                 :root/character-sheets
+                 [{:character-sheet/id id
+                   :character-sheet/name "Argamon"
+                   :character-sheet/data data}]
+                 :root/token-images
+                 [{:image/hash "hp-tok"
+                   :token-image/character-sheet data}]}
+                {:db/id -10
+                 :object/type :token/token
+                 :token/character-sheet data
+                 :token/image [:image/hash "hp-tok"]
+                 :initiative/health 50}
+                [:db/add scene-id :scene/tokens -10]])
+    (dispatch conn :character-sheets/change-hp id 8)
+    (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))
+          token (first (:scene/tokens (entity @conn scene-id)))
+          snap (sheet/runtime-snapshot sheet)]
+      (is (= 47 (get-in sheet [:runtime :hp :current])))
+      (is (= 0 (get-in sheet [:runtime :hp :temp])))
+      (is (= 47 (:initiative/health token)))
+      (is (= {:current 47 :temp 0 :max 64} (:hp snap))))
+    (dispatch conn :character-sheets/change-hp id -10)
+    (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))
+          token (first (:scene/tokens (entity @conn scene-id)))]
+      (is (= 57 (get-in sheet [:runtime :hp :current])))
+      (is (= 0 (get-in sheet [:runtime :hp :temp])))
+      (is (= 57 (:initiative/health token))))
+    (dispatch conn :character-sheets/rest id :long-rest)
+    (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))
+          token (first (:scene/tokens (entity @conn scene-id)))]
+      (is (= 64 (get-in sheet [:runtime :hp :current])))
+      (is (= 64 (:initiative/health token))))))
+
+(deftest test-token-link-sheet-marks-pc-and-syncs-hp
+  (let [conn (ds/conn-from-db (initial-data true))
+        id "sheet-link"
+        data sample-v2-sheet
+        scene-id (:db/id (:camera/scene
+                          (:user/camera (entity @conn [:db/ident :user]))))]
+    (transact! conn
+               [{:db/ident :root
+                 :root/character-sheets
+                 [{:character-sheet/id id
+                   :character-sheet/name "Argamon"
+                   :character-sheet/data data}]
+                 :root/token-images
+                 [{:image/hash "pc-tok" :image/name "pc.png"}]}
+                {:db/id -10
+                 :object/type :token/token
+                 :token/image [:image/hash "pc-tok"]
+                 :token/label ""}
+                [:db/add scene-id :scene/tokens -10]])
+    (let [token-id (:db/id (first (:scene/tokens (entity @conn scene-id))))]
+      (dispatch conn :token/change-character-sheet [token-id] data)
+      (let [token (entity @conn token-id)]
+        (is (= data (:token/character-sheet token)))
+        (is (contains? (:token/flags token) :player))
+        (is (= 64 (:initiative/health token)))
+        (is (= "Argamon Flamebound" (:token/label token))))
+      (dispatch conn :initiative/change-health token-id (fn [_ v] v) "40")
+      (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))
+            token (entity @conn token-id)]
+        (is (= 40 (:initiative/health token)))
+        (is (= 40 (get-in sheet [:runtime :hp :current]))))
+      (dispatch conn :token-images/change-character-sheet "pc-tok" nil)
+      (let [token (entity @conn token-id)
+            image (entity @conn [:image/hash "pc-tok"])]
+        (is (nil? (:token-image/character-sheet image)))
+        (is (nil? (:token/character-sheet token)))))))
+
 (deftest test-add-effect-ticks-on-round
   (let [conn (ds/conn-from-db (initial-data true))
         id "sheet-fx"

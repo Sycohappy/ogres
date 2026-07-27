@@ -252,15 +252,27 @@
   (let [radius (- half-size 2)
         scale (/ (:token/size data) 5)
         hash (:image/hash (:image/thumbnail (:token/image data)))
-        fill (if (some? hash) (str "token-face-" hash) "token-face-default")]
+        fill (if (some? hash) (str "token-face-" hash) "token-face-default")
+        auras (let [xs (:token/auras data)
+                    legacy (:token/aura-radius data)]
+                (cond
+                  (seq xs) xs
+                  (and (number? legacy) (pos? legacy))
+                  [{:id "legacy" :radius legacy :color "teal"}]
+                  :else []))]
     ($ :g.scene-token
       {:ref node
        :id (str "token" (:db/id data))
        :data-flags (token-flags-attr data)
        :data-hidden (:object/hidden data)}
-      (let [radius (:token/aura-radius data)
-            radius (if (> radius 0) (+ (* grid-size (/ radius 5)) (* scale half-size)) 0)]
-        ($ :circle.scene-token-aura {:style {:r radius}}))
+      (for [{:keys [id radius color]
+             :or {color "teal"}} auras
+            :when (and (number? radius) (pos? radius))
+            :let [px (+ (* grid-size (/ radius 5)) (* scale half-size))]]
+        ($ :circle.scene-token-aura
+          {:key (or id radius)
+           :data-color color
+           :style {:r px}}))
       ($ :g {:style {:transform (str "scale(" scale ")")}}
         ($ :circle.scene-token-shape {:r radius :fill (str "url(#" fill ")")})
         ($ :circle.scene-token-base {:r (+ radius 5)})
@@ -291,6 +303,7 @@
          [:token/size :default 5]
          [:token/light :default 15]
          [:token/aura-radius :default 0]
+         :token/auras
          {:token/image [{:image/thumbnail [:image/hash]}]}
          {:scene/_initiative [:db/id :initiative/turn]}]}]}]}])
 

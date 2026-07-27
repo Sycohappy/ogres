@@ -1,5 +1,6 @@
 (ns ogres.app.component.scene-context-menu
-  (:require [clojure.string :refer [capitalize]]
+  (:require [clojure.string :refer [capitalize blank?]]
+            [ogres.app.character-sheet :as sheet]
             [ogres.app.component :refer [icon]]
             [ogres.app.component.scene-pattern :refer [pattern]]
             [ogres.app.hooks :as hooks]
@@ -161,59 +162,141 @@
   [{:keys [on-change values]
     :or   {values (constantly (list)) on-change identity}}]
   (let [value-fn (fn [attr] (first (into (sorted-set-by >) (values attr))))
-        sheet (first (values :token/character-sheet))]
+        sheet (first (values :token/character-sheet))
+        hp-cur (sheet/runtime-current-hp sheet)
+        hp-max (when sheet (sheet/hp-max sheet))
+        ac (when sheet (sheet/ac-value sheet))
+        auras (let [xs (first (values :token/auras))
+                    legacy (or (value-fn :token/aura-radius) 0)]
+                (cond
+                  (seq xs) (vec xs)
+                  (pos? legacy) [{:id "legacy" :radius legacy :color "teal"}]
+                  :else []))]
     ($ :<>
       (when sheet
         ($ :.context-menu-sheet
-          ($ :p (str (:name sheet)
-                     (when-let [cr (:cr sheet)] (str " (CR " cr ")"))
-                     (when-let [ac (first (:ac sheet))] (str " — AC " ac))
-                     (when-let [hp (get-in sheet [:hp :average])] (str ", HP " hp))))))
-      (let [value (value-fn :token/size)]
-        ($ :<>
-          ($ :label "Size")
-          ($ :button
+          ($ :p (str (sheet/sheet-name sheet)
+                     (when ac (str " — AC " ac))
+                     (when hp-cur
+                       (str ", HP " hp-cur
+                            (when hp-max (str "/" hp-max))))
+                     (when-let [cr (:cr sheet)] (str " (CR " cr ")"))))))
+      ($ :.context-menu-form-details-grid
+        (let [value (or (value-fn :token/size) 5)]
+          ($ :<>
+            ($ :label "Size")
+            ($ :button
+              {:type "button"
+               :auto-focus true
+               :on-click #(on-change :token/change-size (max (- value 5) 5))
+               :aria-label "Decrease token size by 5 feet"}
+              "-")
+            ($ :data {:value value}
+              (str value "ft. " (token-size value)))
+            ($ :button
+              {:type "button"
+               :on-click #(on-change :token/change-size (min (+ value 5) 50))
+               :aria-label "Increase token size by 5 feet"} "+")))
+        (let [value (or (value-fn :token/light) 0)]
+          ($ :<>
+            ($ :label "Light")
+            ($ :button
+              {:type "button"
+               :on-click #(on-change :token/change-light (max (- value 5) 0))
+               :aria-label "Decrease light radius by 5 feet"}
+              "-")
+            ($ :data {:value value}
+              (if (> value 0) (str value "ft. radius") "None"))
+            ($ :button
+              {:type "button"
+               :on-click #(on-change :token/change-light (min (+ value 5) 120))
+               :aria-label "Increase light radius by 5 feet"}
+              "+"))))
+      ($ :.context-menu-auras
+        ($ :strong {:style {:font-size "12px"}} "Auras")
+        (for [{:keys [id radius color] :or {color "teal" radius 0}} auras]
+          ($ :.context-menu-aura-row {:key (str id)}
+            ($ :button
+              {:type "button"
+               :on-click #(on-change :token/update-aura id {:radius (max (- radius 5) 0)})
+               :aria-label "Decrease aura radius"}
+              "-")
+            ($ :data (if (pos? radius) (str radius "ft.") "None"))
+            ($ :button
+              {:type "button"
+               :on-click #(on-change :token/update-aura id {:radius (min (+ radius 5) 120)})
+               :aria-label "Increase aura radius"}
+              "+")
+            ($ :button
+              {:type "button"
+               :title "Remove aura"
+               :aria-label "Remove aura"
+               :on-click #(on-change :token/remove-aura id)}
+              ($ icon {:name "x" :size 14}))
+            ($ :.context-menu-aura-colors
+              (for [c shape-colors]
+                ($ :label {:key c :data-color c :title c :aria-label c}
+                  ($ :input
+                    {:type "radio"
+                     :name (str "aura-color-" id)
+                     :checked (= c color)
+                     :on-change #(on-change :token/update-aura id {:color c})}))))))
+        ($ :.context-menu-aura-actions
+          ($ :button.button.button-neutral
             {:type "button"
-             :auto-focus true
-             :on-click #(on-change :token/change-size (max (- value 5) 5))
-             :aria-label "Decrease token size by 5 feet"}
-            "-")
-          ($ :data {:value value}
-            (str value  "ft. " (token-size value)))
-          ($ :button
-            {:type "button"
-             :on-click #(on-change :token/change-size (min (+ value 5) 50))
-             :aria-label "Increase token size by 5 feet"} "+")))
-      (let [value (value-fn :token/light)]
-        ($ :<>
-          ($ :label "Light")
-          ($ :button
-            {:type "button"
-             :on-click #(on-change :token/change-light (max (- value 5) 0))
-             :aria-label "Decrease light radius by 5 feet"}
-            "-")
-          ($ :data {:value value}
-            (if (> value 0) (str value "ft. radius") "None"))
-          ($ :button
-            {:type "button"
-             :on-click #(on-change :token/change-light (min (+ value 5) 120))
-             :aria-label "Increase light radius by 5 feet"}
-            "+")))
-      (let [value (value-fn :token/aura-radius)]
-        ($ :<>
-          ($ :label "Aura")
-          ($ :button
-            {:type "button"
-             :on-click #(on-change :token/change-aura (max (- value 5) 0))
-             :aria-label "Decrease aura size by 5 feet"}
-            "-")
-          ($ :data {:value value}
-            (if (> value 0) (str value "ft. radius") "None"))
-          ($ :button
-            {:type "button"
-             :on-click #(on-change :token/change-aura (min (+ value 5) 120))
-             :aria-label "Increase aura size by 5 feet"}
-            "+"))))))
+             :style {:font-size "12px" :padding "4px 8px"}
+             :on-click #(on-change :token/add-aura)}
+            "+ Add aura"))))))
+
+(defui ^:private token-form-sheet
+  [{:keys [on-change values]}]
+  (let [result (hooks/use-query
+                [{:root/character-sheets
+                  [:character-sheet/id
+                   :character-sheet/name
+                   :character-sheet/data]}]
+                [:db/ident :root])
+        sheets (or (:root/character-sheets result) [])
+        current (first (values :token/character-sheet))
+        selected-id
+        (or (some (fn [{:character-sheet/keys [id data]}]
+                    (when (= data current) (str id)))
+                  sheets)
+            (when (map? current)
+              (let [want (sheet/sheet-name current)]
+                (some (fn [{:character-sheet/keys [id data]}]
+                        (when (= want (sheet/sheet-name data)) (str id)))
+                      sheets)))
+            "")]
+    ($ :<>
+      ($ :label {:style {:justify-content "flex-start"}} "Link sheet")
+      ($ :select.text
+        {:value (or selected-id "")
+         :style {:grid-column "1 / -1" :width "100%"}
+         :on-change
+         (fn [event]
+           (let [id (.. event -target -value)]
+             (if (blank? id)
+               (on-change :token/change-character-sheet nil)
+               (let [entry (first (filter #(= id (str (:character-sheet/id %))) sheets))]
+                 (on-change :token/change-character-sheet
+                            (:character-sheet/data entry))))))}
+        ($ :option {:value ""} "No character sheet")
+        (for [{:character-sheet/keys [id name data]} sheets]
+          ($ :option {:key (str id) :value (str id)}
+            (str name
+                 (when (sheet/pc-sheet? data) " (PC)")
+                 (when (:cr data) (str " · CR " (:cr data)))))))
+      (when current
+        ($ :p.context-menu-sheet-hint
+          {:style {:grid-column "1 / -1" :margin 0 :opacity 0.85 :font-size "12px"}}
+          (str "HP "
+               (or (sheet/runtime-current-hp current) "?")
+               "/"
+               (or (sheet/hp-max current) "?")
+               " · AC "
+               (or (sheet/ac-value current) "?")
+               " · linking marks PC tokens and syncs initiative HP"))))))
 
 (defui ^:private token-form-conditions
   [props]
@@ -241,8 +324,25 @@
 
 (defui ^:private context-menu-token [props]
   (let [dispatch (hooks/use-dispatch)
+        publish  (hooks/use-publish)
         data     (:data props)
-        idxs     (into [] (map :db/id) data)]
+        idxs     (into [] (map :db/id) data)
+        sheets-q (hooks/use-query
+                  [{:root/character-sheets
+                    [:character-sheet/id :character-sheet/name :character-sheet/data]}]
+                  [:db/ident :root])
+        library  (or (:root/character-sheets sheets-q) [])
+        sheet    (:token/character-sheet (first data))
+        hash     (:image/hash (:token/image (first data)))
+        sheet-id (when (map? sheet)
+                   (or (some (fn [{:character-sheet/keys [id data]}]
+                               (when (= data sheet) (str id)))
+                             library)
+                       (let [want (sheet/sheet-name sheet)]
+                         (some (fn [{:character-sheet/keys [id data]}]
+                                 (when (= want (sheet/sheet-name data)) (str id)))
+                               library))
+                       ""))]
     ($ context-menu-fn
       {:render-toolbar
        (fn [{:keys [selected on-change]}]
@@ -250,6 +350,7 @@
            (for [[form icon-name tooltip]
                  [[:label "fonts" "Label"]
                   [:details "sliders" "Options"]
+                  [:sheet "person-circle" "Link character sheet"]
                   [:conditions "arrow-through-heart-fill" "Conditions"]]]
              ($ :button
                {:key form
@@ -258,6 +359,14 @@
                 :data-tooltip tooltip
                 :on-click #(on-change form)}
                ($ icon {:name icon-name})))
+           ($ :button
+             {:type "button"
+              :data-tooltip "Pop out character sheet"
+              :disabled (nil? sheet)
+              :on-click
+              #(when sheet
+                 (publish :character-sheets/open-popout sheet (or hash "") (or sheet-id "")))}
+             ($ icon {:name "pip"}))
            (let [on (every? (comp vector? :scene/_initiative) data)]
              ($ :<>
                ($ :button
@@ -274,7 +383,7 @@
            (let [on (every? (comp boolean :player :token/flags) data)]
              ($ :button
                {:type "button"
-                :data-tooltip "Player"
+                :data-tooltip "PC / Player"
                 :data-selected on
                 :on-click #(dispatch :token/change-flag idxs :player (not on))}
                ($ icon {:name "people-fill"})))
@@ -315,6 +424,7 @@
           (case selected
             :label      ($ token-form-label props)
             :details    ($ token-form-details props)
+            :sheet      ($ token-form-sheet props)
             :conditions ($ token-form-conditions props)))))))
 
 (defui ^:private shape-form-style

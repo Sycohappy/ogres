@@ -38,7 +38,7 @@
       ($ :button.button {:disabled true} status-icon "Status not known"))))
 
 (def ^:private data
-  {:characters {:icon "person-vcard" :label "Characters"}
+  {:characters {:icon "person-circle" :label "Characters"}
    :data       {:icon "wrench-adjustable-circle" :label "Manage local data"}
    :chat       {:icon "journal-bookmark-fill" :label "Chat"}
    :dice       {:icon "dice-5-fill" :label "Dice roller"}

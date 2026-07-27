@@ -374,9 +374,14 @@
   border: none;
   color: var(--color-black-500);
   flex: 1;
-  font-size: 1.1rem;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  padding: 0 4px;
   position: relative;
-  inset: -4px auto auto auto;
+  inset: 0;
+  text-align: center;
   z-index: 1;
 }
 

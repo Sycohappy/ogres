@@ -1,5 +1,6 @@
 (ns ogres.app.component.panel-initiative
   (:require [clojure.string :refer [join capitalize blank?]]
+            [ogres.app.character-sheet :as sheet]
             [ogres.app.component :refer [icon image]]
             [ogres.app.hooks :as hooks]
             [uix.core :as uix :refer [defui $]]))
@@ -90,16 +91,19 @@
             ($ icon {:name "check"})))))))
 
 (defui ^:private form-hp
-  [{:keys [value on-change]}]
+  [{:keys [value max on-change]}]
   (let [[editing set-editing form] (hooks/use-modal)
-        input (uix/use-ref)]
+        input (uix/use-ref)
+        label (cond (and (some? value) (some? max)) (str value "/" max)
+                    (some? value) value
+                    :else "HP")]
     ($ :.initiative-token-health
       {:data-present (some? value)}
       ($ :.initiative-token-health-frame
         ($ icon {:name "heart-fill" :size 40}))
       ($ :button.initiative-token-health-label
         {:on-click (fn [event] (.stopPropagation event) (set-editing not))}
-        (or value "HP"))
+        label)
       (if editing
         ($ :form.initiative-token-form
           {:ref form
@@ -192,6 +196,7 @@
       (if (or host (contains? flags :player))
         ($ form-hp
           {:value (:initiative/health entity)
+           :max (sheet/hp-max (:token/character-sheet entity))
            :on-change
            (fn [f v]
              (dispatch :initiative/change-health id f v))})))))

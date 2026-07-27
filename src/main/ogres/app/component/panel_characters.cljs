@@ -326,19 +326,19 @@
         remaining (max 0 (- max-n spent))
         kind (or (:kind res) "uses")]
     (if (= kind "pool")
-      (str "<div class=\"resource-pool\" data-id=\"" id "\">"
+      (str "<div class=\"resource-pool\" data-id=\"" id "\" data-max=\"" max-n "\" data-kind=\"pool\">"
            "<span class=\"resource-name\">" (escape-html (:name res)) "</span>"
            "<button type=\"button\" onclick=\"ogresSpendResource('" id "',1)\">−</button>"
            "<span class=\"resource-value\">" remaining " / " max-n "</span>"
            "<button type=\"button\" onclick=\"ogresSpendResource('" id "',-1)\">+</button>"
            "</div>")
-      (str "<div class=\"resource-uses\" data-id=\"" id "\">"
+      (str "<div class=\"resource-uses\" data-id=\"" id "\" data-max=\"" max-n "\" data-kind=\"uses\">"
            "<span class=\"resource-name\">" (escape-html (:name res)) "</span>"
            (apply str
                   (for [i (range max-n)]
                     (str "<button type=\"button\" class=\"use-box"
                          (when (< i spent) " used")
-                         "\" onclick=\"ogresSpendResource('" id "',"
+                         "\" data-index=\"" i "\" onclick=\"ogresSpendResource('" id "',"
                          (if (< i spent) "-1" "1")
                          ")\"></button>")))
            "</div>"))))
@@ -587,8 +587,8 @@
          ;; RIGHT
          "<aside class=\"panel\">"
          "<div class=\"hp-block\">"
-         "<div class=\"hp-current\">" (or (:current runtime) max-hp) "</div>"
-         "<div class=\"hp-sub\">HP / " max-hp
+         "<div class=\"hp-current\" id=\"hpCurrent\">" (or (:current runtime) max-hp) "</div>"
+         "<div class=\"hp-sub\" id=\"hpSub\">HP / " max-hp
          (when (pos? (or (:temp runtime) 0))
            (str " · Temp " (:temp runtime)))
          "</div>"
@@ -644,8 +644,42 @@
          "window.ogresSpendResource=function(id,amount){post({type:\"ogres:spend-resource\",resourceId:id,amount:amount});};"
          "window.ogresRest=function(kind){post({type:\"ogres:rest\",kind:kind});};"
          "window.ogresChangeHp=function(sign){var n=parseInt(document.getElementById(\"hpDelta\").value,10)||1;post({type:\"ogres:change-hp\",delta:sign*n});};"
+         "window.ogresApplyRuntime=function(data){"
+         "if(!data)return;"
+         "var hp=data.hp||{};"
+         "var curEl=document.getElementById(\"hpCurrent\");"
+         "var subEl=document.getElementById(\"hpSub\");"
+         "if(curEl&&hp.current!=null)curEl.textContent=String(hp.current);"
+         "if(subEl){var t=\"HP / \"+(hp.max!=null?hp.max:\"?\");if(hp.temp>0)t+=\" · Temp \"+hp.temp;subEl.textContent=t;}"
+         "var spent=data.resourceSpent||{};"
+         "document.querySelectorAll(\".resource-pool,.resource-uses\").forEach(function(el){"
+         "var id=el.getAttribute(\"data-id\");"
+         "var max=parseInt(el.getAttribute(\"data-max\"),10)||0;"
+         "var s=spent[id];if(s==null)s=0;"
+         "if(el.getAttribute(\"data-kind\")===\"pool\"){"
+         "var val=el.querySelector(\".resource-value\");"
+         "if(val)val.textContent=Math.max(0,max-s)+\" / \"+max;"
+         "}else{"
+         "el.querySelectorAll(\".use-box\").forEach(function(btn,i){"
+         "if(i<s)btn.classList.add(\"used\");else btn.classList.remove(\"used\");"
+         "btn.setAttribute(\"onclick\",\"ogresSpendResource('\"+id+\"',\"+(i<s?-1:1)+\")\");"
+         "});"
+         "}"
+         "});"
+         "};"
          "document.querySelectorAll(\".tab\").forEach(function(tab){tab.addEventListener(\"click\",function(){document.querySelectorAll(\".tab\").forEach(function(t){t.classList.remove(\"active\")});document.querySelectorAll(\".tab-panel\").forEach(function(p){p.classList.remove(\"active\")});tab.classList.add(\"active\");document.querySelector('[data-panel=\"'+tab.getAttribute(\"data-tab\")+'\"]').classList.add(\"active\");});});"
-         "window.addEventListener(\"message\",function(event){if(event.origin!==window.location.origin)return;var data=event.data;if(!data||data.popupId!==window.ogresPopupId)return;if(data.type===\"ogres:initiative-roll-result\"){var el=document.querySelector(\".initiative-result\");if(!el)return;if(data.error){el.textContent=data.error;return;}var modStr=data.modifier>=0?\"+\"+data.modifier:String(data.modifier);el.textContent=data.total+\" (\"+data.die+\" \"+modStr+\")\"+(data.count>1?\" ×\"+data.count:\"\");}});"
+         "window.addEventListener(\"message\",function(event){"
+         "if(event.origin!==window.location.origin)return;"
+         "var data=event.data;"
+         "if(!data||data.popupId!==window.ogresPopupId)return;"
+         "if(data.type===\"ogres:initiative-roll-result\"){"
+         "var el=document.querySelector(\".initiative-result\");if(!el)return;"
+         "if(data.error){el.textContent=data.error;return;}"
+         "var modStr=data.modifier>=0?\"+\"+data.modifier:String(data.modifier);"
+         "el.textContent=data.total+\" (\"+data.die+\" \"+modStr+\")\"+(data.count>1?\" ×\"+data.count:\"\");"
+         "}"
+         "if(data.type===\"ogres:sheet-runtime\"){window.ogresApplyRuntime(data);}"
+         "});"
          "</script>"
          "</body></html>")))
 
@@ -671,9 +705,39 @@
     (when-not (.-closed popup)
       (.postMessage popup (clj->js payload) js/window.location.origin))))
 
+(defn ^:private resolve-library-sheet-id
+  "Library sheet id for a linked token sheet map (equality, then name)."
+  [sheets linked-sheet]
+  (or (some (fn [{:character-sheet/keys [id data]}]
+              (when (= data linked-sheet) (str id)))
+            sheets)
+      (when (map? linked-sheet)
+        (let [want (sheet/sheet-name linked-sheet)]
+          (some (fn [{:character-sheet/keys [id data]}]
+                  (when (= want (sheet/sheet-name data)) (str id)))
+                sheets)))
+      ""))
+
+(defn ^:private reply-sheet-runtime! [conn popup-id sheet-id]
+  (when (and (not-empty popup-id) (not-empty sheet-id))
+    (when-let [entry (ds/entity @conn [:character-sheet/id sheet-id])]
+      (reply-to-popout!
+       popup-id
+       (merge {:type "ogres:sheet-runtime"
+               :popupId popup-id
+               :sheetId sheet-id}
+              (sheet/runtime-snapshot (:character-sheet/data entry)))))))
+
 (defui initiative-popout-listeners []
   (let [conn     (uix/use-context state/context)
         dispatch (hooks/use-dispatch)]
+    (hooks/use-subscribe
+     :character-sheets/open-popout
+     (uix/use-callback
+      (fn [sheet hash sheet-id]
+        (when (map? sheet)
+          (open-sheet-popout! sheet (or hash "") (or sheet-id ""))))
+      []))
     (uix/use-effect
      (fn []
        (let [origin js/window.location.origin
@@ -757,16 +821,28 @@
 
                      "ogres:spend-resource"
                      (when-let [sid (not-empty (.-sheetId data))]
-                       (dispatch :character-sheets/spend-resource
-                                 sid (.-resourceId data) (.-amount data)))
+                       (let [popup-id (.-popupId data)]
+                         (dispatch :character-sheets/spend-resource
+                                   sid (.-resourceId data) (.-amount data))
+                         (reply-sheet-runtime! conn popup-id sid)))
 
                      "ogres:rest"
                      (when-let [sid (not-empty (.-sheetId data))]
-                       (dispatch :character-sheets/rest sid (.-kind data)))
+                       (let [popup-id (.-popupId data)]
+                         (dispatch :character-sheets/rest sid (.-kind data))
+                         (reply-sheet-runtime! conn popup-id sid)))
 
                      "ogres:change-hp"
                      (when-let [sid (not-empty (.-sheetId data))]
-                       (dispatch :character-sheets/change-hp sid (.-delta data)))
+                       (let [popup-id (.-popupId data)]
+                         (dispatch :character-sheets/change-hp sid (.-delta data))
+                         (reply-sheet-runtime! conn popup-id sid)))
+
+                     "ogres:set-temp-hp"
+                     (when-let [sid (not-empty (.-sheetId data))]
+                       (let [popup-id (.-popupId data)]
+                         (dispatch :character-sheets/set-temp-hp sid (.-temp data))
+                         (reply-sheet-runtime! conn popup-id sid)))
 
                      nil))))]
 
@@ -957,8 +1033,7 @@
             ($ :ul.character-token-list
               (for [token tokens
                     :let [sheet (:token-image/character-sheet token)
-                          selected-id (some (fn [{:character-sheet/keys [id data]}]
-                                              (when (= data sheet) (str id))) sheets)]]
+                          selected-id (resolve-library-sheet-id sheets sheet)]]
                 ($ :li.character-token-list-item
                   {:key (:image/hash token)}
                   ($ :.character-token-heading

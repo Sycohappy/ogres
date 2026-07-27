@@ -174,35 +174,60 @@
   }
 
   .context-menu-form-details {
-    display: grid;
-    grid-template-columns: 1fr 26px 3fr 26px;
-    grid-template-rows: repeat(3, 28px);
-    padding: 6px 6px 6px 8px;
-    row-gap: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 260px;
+    padding: 8px;
 
-    :is(label, data) {
+    .context-menu-sheet {
+      border-bottom: 1px solid var(--color-blues-500);
+      padding-bottom: 6px;
+
+      p {
+        font-size: 12px;
+        line-height: 1.35;
+        margin: 0;
+        opacity: 0.9;
+        text-align: left;
+        white-space: normal;
+        word-break: break-word;
+      }
+    }
+
+    .context-menu-form-details-grid {
+      display: grid;
+      grid-template-columns: auto 26px minmax(72px, 1fr) 26px;
+      row-gap: 4px;
+      column-gap: 4px;
+    }
+
+    .context-menu-form-details-grid :is(label, data) {
       align-items: center;
       box-sizing: border-box;
       display: flex;
-      height: 100%;
+      min-height: 28px;
     }
 
-    :is(label, data, button) {
+    .context-menu-form-details-grid :is(label, data, button) {
       display: flex;
       align-items: center;
       justify-content: center;
     }
 
-    label {
+    .context-menu-form-details-grid label {
       justify-content: flex-end;
-      margin-right: 8px;
+      margin-right: 4px;
+      white-space: nowrap;
     }
 
-    data {
+    .context-menu-form-details-grid data {
       background-color: var(--color-blues-500);
+      justify-content: center;
+      padding: 0 4px;
     }
 
-    button {
+    .context-menu-form-details-grid button {
       aspect-ratio: 1;
       background-color: var(--color-blues-900);
       border-radius: 3px;
@@ -210,11 +235,82 @@
       color: var(--color-black-500);
       cursor: pointer;
       font-size: 18px;
-      height: 100%;
+      height: 28px;
+      width: 28px;
 
       &:is(:focus-visible, :hover) {
         color: var(--color-black-100);
       }
+    }
+
+    .context-menu-auras {
+      border-top: 1px solid var(--color-blues-500);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-top: 8px;
+    }
+
+    .context-menu-aura-row {
+      display: grid;
+      gap: 4px;
+      grid-template-columns: 26px minmax(64px, 1fr) 26px auto;
+      align-items: center;
+    }
+
+    .context-menu-aura-colors {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px;
+      grid-column: 1 / -1;
+    }
+
+    .context-menu-aura-colors label {
+      aspect-ratio: 1;
+      background-color: var(--color-context, var(--color-blues-900));
+      border-radius: 2px;
+      cursor: pointer;
+      height: 16px;
+      margin: 0;
+      overflow: hidden;
+      width: 16px;
+
+      &:has(:checked) {
+        outline: 2px solid var(--color-black-100);
+        outline-offset: 1px;
+      }
+
+      input {
+        appearance: none;
+        margin: 0;
+      }
+    }
+
+    .context-menu-aura-actions {
+      display: flex;
+      gap: 6px;
+    }
+  }
+
+  .context-menu-form-sheet {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 220px;
+    padding: 8px;
+
+    label {
+      justify-content: flex-start;
+      margin: 0;
+    }
+
+    select {
+      background-color: var(--color-blues-900);
+      border: 1px solid var(--color-blues-500);
+      border-radius: 3px;
+      color: var(--color-black-100);
+      padding: 4px 6px;
+      width: 100%;
     }
   }
 

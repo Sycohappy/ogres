@@ -202,9 +202,9 @@
   fill: none;
   pointer-events: none;
   stroke-dasharray: 1px 3px;
-  stroke-opacity: 1;
-  stroke-width: 1px;
-  stroke: var(--scene-stroke);
+  stroke-opacity: 0.95;
+  stroke-width: 1.5px;
+  stroke: var(--color-context, var(--scene-stroke));
   transition: r 60ms ease-out;
 }
 

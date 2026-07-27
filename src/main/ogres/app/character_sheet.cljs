@@ -9,6 +9,16 @@
   (or (= 2 (:version sheet))
       (= "2" (str (:version sheet)))))
 
+(defn pc-sheet?
+  "Heuristic for player-character sheets (vs monster/NPC bestiary entries)."
+  [sheet]
+  (boolean
+   (and (map? sheet)
+        (or (v2? sheet)
+            (and (nil? (:cr sheet))
+                 (or (get-in sheet [:identity :name])
+                     (:name sheet)))))))
+
 (defn sheet-name
   [sheet]
   (or (get-in sheet [:identity :name])
@@ -141,6 +151,25 @@
   [sheet]
   (let [sheet (ensure-runtime sheet)]
     (get-in sheet [:runtime :hp])))
+
+(defn runtime-current-hp
+  "Current HP from sheet runtime, or nil if sheet is missing."
+  [sheet]
+  (when (map? sheet)
+    (get-in (ensure-runtime sheet) [:runtime :hp :current])))
+
+(defn runtime-snapshot
+  "Payload for popout live sync: hp + spent maps with string keys."
+  [sheet]
+  (let [s (ensure-runtime sheet)
+        spent (get-in s [:runtime :resourceSpent] {})
+        slots (get-in s [:runtime :slotsExpended] {})
+        hp (get-in s [:runtime :hp])]
+    {:hp {:current (:current hp)
+          :temp (:temp hp)
+          :max (or (hp-max s) 0)}
+     :resourceSpent (into {} (map (fn [[k v]] [(str (if (keyword? k) (name k) k)) v]) spent))
+     :slotsExpended (into {} (map (fn [[k v]] [(str (if (keyword? k) (name k) k)) v]) slots))}))
 
 (defn speed-map
   [sheet]

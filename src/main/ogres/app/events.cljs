@@ -18,7 +18,10 @@
 (def ^:private zoom-scales
   [0.15 0.30 0.50 0.75 0.90 1 1.25 1.50 2 3 4])
 
-(declare tick-all-sheet-effects-txs)
+(declare tick-all-sheet-effects-txs
+         find-library-sheet-id
+         write-sheet-current-hp-txs
+         sheet-link-txs)
 
 (defn ^:private linear [dx dy rx ry]
   (fn [n] (+ (* (/ (- n dx) (- dy dx)) (- ry rx)) rx)))
@@ -655,6 +658,7 @@
   [data _ point hash]
   (let [user  (ds/entity data [:db/ident :user])
         image (ds/entity data [:image/hash hash])
+        sheet (when image (:token-image/character-sheet image))
         {{camera :db/id
           shift :camera/point
           scale :camera/scale
@@ -672,10 +676,14 @@
       (conj [:db/add -1 :token/label (:token-image/default-label image)])
       (and (some? image)
            (nil? (:token-image/default-label image))
-           (some? (:token-image/character-sheet image)))
-      (conj [:db/add -1 :token/label (:name (:token-image/character-sheet image))])
-      (and (some? image) (some? (:token-image/character-sheet image)))
-      (conj [:db/add -1 :token/character-sheet (:token-image/character-sheet image)])
+           (some? sheet))
+      (conj [:db/add -1 :token/label (sheet/sheet-name sheet)])
+      (some? sheet)
+      (conj [:db/add -1 :token/character-sheet sheet])
+      (sheet/pc-sheet? sheet)
+      (conj [:db/add -1 :token/flags #{:player}])
+      (number? (sheet/runtime-current-hp sheet))
+      (conj [:db/add -1 :initiative/health (sheet/runtime-current-hp sheet)])
       (and (some? image) (some? (:token-image/default-size image)))
       (conj [:db/add -1 :token/size (:token-image/default-size image)])
       (and (some? image) (some? (:token-image/default-light image)))
@@ -710,10 +718,69 @@
   (for [id idxs]
     {:db/id id :token/light radius}))
 
+(defn ^:private token-auras-vec
+  "Normalized aura list; migrates legacy :token/aura-radius when needed."
+  [token]
+  (let [auras (:token/auras token)
+        legacy (:token/aura-radius token)]
+    (cond
+      (seq auras) (vec auras)
+      (and (number? legacy) (pos? legacy))
+      [{:id "legacy" :radius legacy :color "teal"}]
+      :else [])))
+
 (defmethod event-tx-fn :token/change-aura
-  [_ _ idxs radius]
-  (for [id idxs]
-    {:db/id id :token/aura-radius radius}))
+  [data _ idxs radius]
+  (mapcat
+   (fn [id]
+     (let [token (ds/entity data id)
+           auras (token-auras-vec token)
+           radius (max 0 radius)]
+       (cond
+         (empty? auras)
+         (when (pos? radius)
+           [{:db/id id
+             :token/auras [{:id (str (random-uuid)) :radius radius :color "teal"}]
+             :token/aura-radius radius}])
+
+         :else
+         (let [auras (assoc-in auras [0 :radius] radius)]
+           [{:db/id id
+             :token/auras auras
+             :token/aura-radius radius}]))))
+   idxs))
+
+(defmethod event-tx-fn :token/add-aura
+  [data _ idxs]
+  (for [id idxs
+        :let [token (ds/entity data id)
+              auras (token-auras-vec token)
+              next (conj auras {:id (str (random-uuid)) :radius 10 :color "red"})]]
+    {:db/id id
+     :token/auras next
+     :token/aura-radius (or (:radius (first next)) 0)}))
+
+(defmethod event-tx-fn :token/remove-aura
+  [data _ idxs aura-id]
+  (for [id idxs
+        :let [token (ds/entity data id)
+              next (filterv #(not= (str (:id %)) (str aura-id)) (token-auras-vec token))]]
+    {:db/id id
+     :token/auras next
+     :token/aura-radius (or (:radius (first next)) 0)}))
+
+(defmethod event-tx-fn :token/update-aura
+  [data _ idxs aura-id attrs]
+  (for [id idxs
+        :let [token (ds/entity data id)
+              next (mapv (fn [aura]
+                           (if (= (str (:id aura)) (str aura-id))
+                             (merge aura attrs)
+                             aura))
+                         (token-auras-vec token))]]
+    {:db/id id
+     :token/auras next
+     :token/aura-radius (or (:radius (first next)) 0)}))
 
 (defmethod event-tx-fn :token/change-dead
   [_ _ idxs add?]
@@ -775,7 +842,13 @@
   [data _ idxs adding?]
   (let [user   (ds/entity data [:db/ident :user])
         scene  (:db/id (:camera/scene (:user/camera user)))
-        select [:db/id {:token/image [:image/hash]} [:token/flags :default #{}] :initiative/suffix :token/label]
+        select [:db/id
+                {:token/image [:image/hash]}
+                [:token/flags :default #{}]
+                :initiative/suffix
+                :initiative/health
+                :token/label
+                :token/character-sheet]
         result (ds/pull data [{:scene/initiative select}] scene)
         change (into #{} (ds/pull-many data select idxs))
         exists (into #{} (:scene/initiative result))]
@@ -794,10 +867,14 @@
         :scene/initiative
         (let [merge (union exists change)
               sffxs (suffixes merge)]
-          (for [token merge :let [id (:db/id token)]]
-            (if-let [suffix (sffxs id)]
-              {:db/id id :initiative/suffix suffix}
-              {:db/id id})))}]
+          (for [token merge
+                :let [id (:db/id token)
+                      seeded (when (nil? (:initiative/health token))
+                               (sheet/runtime-current-hp
+                                (:token/character-sheet token)))]]
+            (cond-> {:db/id id}
+              (sffxs id) (assoc :initiative/suffix (sffxs id))
+              (number? seeded) (assoc :initiative/health seeded))))}]
       (into [] cat
             (for [{id :db/id} change]
               [[:db/retract id :initiative/suffix]
@@ -925,10 +1002,17 @@
 
 (defmethod event-tx-fn :initiative/change-health
   [data _ id f value]
-  (let [parsed (.parseFloat js/window value)]
-    (if (.isNaN js/Number parsed) []
-        (let [{:keys [initiative/health]} (ds/entity data id)]
-          [{:db/id id :initiative/health (f health parsed)}]))))
+  (let [parsed (js/Number.parseFloat value)]
+    (if (js/Number.isNaN parsed) []
+        (let [token (ds/entity data id)
+              old (:initiative/health token)
+              new-health (f old parsed)
+              sheet (:token/character-sheet token)
+              sheet-id (find-library-sheet-id data sheet)]
+          (concat
+           [{:db/id id :initiative/health new-health}]
+           (when (and sheet-id (sheet/v2? sheet) (number? new-health))
+             (write-sheet-current-hp-txs data sheet-id new-health)))))))
 
 (defmethod event-tx-fn :initiative/leave
   [data]
@@ -1042,21 +1126,43 @@
    [:db.fn/call event-tx-fn :token-images/change-url hash url]])
 
 (defmethod
-  ^{:doc "Assigns a character sheet map to the given token image template."}
+  ^{:doc "Assigns a character sheet map to the given token image template,
+          and pushes the link onto placed tokens that use this image."}
   event-tx-fn :token-images/change-character-sheet
-  [_ _ hash sheet]
-  (if (some? sheet)
-    [[:db/add [:image/hash hash] :token-image/character-sheet sheet]]
-    [[:db/retract [:image/hash hash] :token-image/character-sheet]]))
+  [data _ hash sheet]
+  (let [image (ds/entity data [:image/hash hash])
+        token-ids (when (:db/id image)
+                    (ds/q '[:find [?e ...]
+                            :in $ ?img
+                            :where [?e :token/image ?img]]
+                          data (:db/id image)))]
+    (concat
+     (if (some? sheet)
+       [[:db/add [:image/hash hash] :token-image/character-sheet sheet]]
+       [[:db/retract [:image/hash hash] :token-image/character-sheet]])
+     (when (seq token-ids)
+       (event-tx-fn data :token/change-character-sheet token-ids sheet)))))
 
 (defmethod
-  ^{:doc "Updates the character sheet on the given token instances."}
+  ^{:doc "Updates the character sheet on the given token instances.
+          PC sheets also mark the token as :player and seed initiative HP."}
   event-tx-fn :token/change-character-sheet
-  [_ _ idxs sheet]
-  (for [id idxs]
-    (if (some? sheet)
-      {:db/id id :token/character-sheet sheet}
-      [:db/retract id :token/character-sheet])))
+  [data _ idxs sheet]
+  (mapcat
+   (fn [id]
+     (let [token (ds/entity data id)
+           flags (or (:token/flags token) #{})
+           hp (sheet/runtime-current-hp sheet)]
+       (if (some? sheet)
+         (cond-> [{:db/id id :token/character-sheet sheet}]
+           (sheet/pc-sheet? sheet)
+           (conj {:db/id id :token/flags (conj flags :player)})
+           (number? hp)
+           (conj {:db/id id :initiative/health hp})
+           (str/blank? (or (:token/label token) ""))
+           (conj {:db/id id :token/label (sheet/sheet-name sheet)}))
+         [[:db/retract id :token/character-sheet]])))
+   idxs))
 
 ;; -- Character Sheets --
 (defmethod
@@ -1143,6 +1249,33 @@
   [_ _ id]
   [[:db/retractEntity [:character-sheet/id id]]])
 
+(defn ^:private find-library-sheet-id
+  "Resolves a library :character-sheet/id for a token's sheet map copy."
+  [data sheet]
+  (when (map? sheet)
+    (let [sheets (:root/character-sheets (ds/entity data [:db/ident :root]))]
+      (or (some (fn [e]
+                  (when (= (:character-sheet/data e) sheet)
+                    (:character-sheet/id e)))
+                sheets)
+          (let [want (sheet/sheet-name sheet)]
+            (some (fn [e]
+                    (when (= want (sheet/sheet-name (:character-sheet/data e)))
+                      (:character-sheet/id e)))
+                  sheets))))))
+
+(defn ^:private write-sheet-current-hp-txs
+  "Sets sheet runtime current HP (keeps temp) and refreshes linked copies."
+  [data sheet-id current]
+  (let [entry (ds/entity data [:character-sheet/id sheet-id])
+        old (:character-sheet/data entry)]
+    (when (and entry (sheet/v2? old))
+      (let [s (sheet/ensure-runtime old)
+            max-hp (or (sheet/hp-max s) 0)
+            next-cur (max 0 (min max-hp current))
+            next (assoc-in s [:runtime :hp :current] next-cur)]
+        (sheet-link-txs data sheet-id next)))))
+
 (defn ^:private sheet-link-txs
   "Updates library sheet + linked token-image/token copies (map-equality sync)."
   [data id next-sheet]
@@ -1174,17 +1307,35 @@
        (for [entity-id linked-tokens]
          {:db/id entity-id :token/character-sheet next-sheet})))))
 
+(defn ^:private tokens-linked-to-sheet
+  "Token entity ids carrying find-sheet (map equality) or whose image is linked."
+  [data find-sheet]
+  (when (some? find-sheet)
+    (into []
+          (distinct)
+          (concat
+           (ds/q '[:find [?e ...]
+                   :in $ ?sheet
+                   :where [?e :token/character-sheet ?sheet]]
+                 data find-sheet)
+           (ds/q '[:find [?e ...]
+                   :in $ ?sheet
+                   :where
+                   [?img :token-image/character-sheet ?sheet]
+                   [?e :token/image ?img]]
+                 data find-sheet)))))
+
 (defn ^:private sync-token-health-txs
-  "Mirrors sheet runtime HP onto initiative/health for tokens with this sheet."
-  [data sheet]
-  (let [tokens (ds/q '[:find [?e ...]
-                       :in $ ?sheet
-                       :where [?e :token/character-sheet ?sheet]]
-                     data sheet)
-        current (get-in (sheet/ensure-runtime sheet) [:runtime :hp :current])]
-    (when (number? current)
-      (for [id tokens]
-        {:db/id id :initiative/health current}))))
+  "Mirrors hp-sheet runtime HP onto initiative/health.
+   find-sheet is the pre-update map used for DataScript equality lookup."
+  ([data sheet]
+   (sync-token-health-txs data sheet sheet))
+  ([data find-sheet hp-sheet]
+   (let [tokens (tokens-linked-to-sheet data find-sheet)
+         current (get-in (sheet/ensure-runtime hp-sheet) [:runtime :hp :current])]
+     (when (and (number? current) (seq tokens))
+       (for [id tokens]
+         {:db/id id :initiative/health current})))))
 
 (defmethod
   ^{:doc "Spends (or restores with negative amount) a sheet resource by id."}
@@ -1245,7 +1396,7 @@
               [(min max-hp (- cur delta)) temp])
             next (assoc-in s [:runtime :hp] {:current next-cur :temp next-temp})
             txs (sheet-link-txs data sheet-id next)]
-        (concat txs (sync-token-health-txs data old))))))
+        (concat txs (sync-token-health-txs data old next))))))
 
 (defmethod
   ^{:doc "Sets temporary HP on a sheet."}
@@ -1293,7 +1444,7 @@
             next (assoc s :runtime cleared)
             txs (sheet-link-txs data sheet-id next)]
         (concat txs (when (= kind :long-rest)
-                      (sync-token-health-txs data old)))))))
+                      (sync-token-health-txs data old next)))))))
 
 (defmethod
   ^{:doc "Applies a catalog entry (already mapped) onto a library sheet."}
@@ -1523,6 +1674,7 @@
    :token/light
    :token/size
    :token/aura-radius
+   :token/auras
    :token/image
    :token/character-sheet
    :prop/image])

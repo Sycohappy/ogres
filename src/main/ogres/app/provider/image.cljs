@@ -1,5 +1,7 @@
 (ns ogres.app.provider.image
   (:require [datascript.core :as ds]
+            [goog.crypt :as crypt]
+            [goog.crypt.Sha1]
             [ogres.app.provider.dispatch :refer [use-dispatch]]
             [ogres.app.provider.events :as events]
             [ogres.app.provider.idb :as idb]
@@ -17,14 +19,25 @@
       (map (fn [s] (.. s (toString 16) (padStart 2 "0"))))
       (join "")))
 
+(defn ^:private sha1-hex
+  "Pure-JS SHA-1 hex digest. Used when crypto.subtle is unavailable
+   (non-secure contexts such as http://LAN-IP)."
+  [^js/ArrayBuffer buf]
+  (let [hasher (goog.crypt.Sha1.)]
+    (.update hasher (js/Uint8Array. buf))
+    (crypt/byteArrayToHex (.digest hasher))))
+
 (defn ^:private create-hash
   "Returns a Promise which resolves with a hash string for the
    image data given as a Blob object."
   [^js/Blob image]
   (-> (.arrayBuffer image)
-      (.then (fn [buf] (js/crypto.subtle.digest hash-fn buf)))
-      (.then (fn [dig] (js/Uint8Array. dig)))
-      (.then decode-digest)))
+      (.then
+       (fn [buf]
+         (if-let [subtle (some-> js/crypto .-subtle)]
+           (-> (.digest subtle hash-fn buf)
+               (.then (fn [dig] (decode-digest (js/Uint8Array. dig)))))
+           (js/Promise.resolve (sha1-hex buf)))))))
 
 (defn ^:private create-thumbnail
   "Returns a <canvas> element with the contents of the src <canvas> cropped
@@ -233,12 +246,15 @@
                  (case type
                    :token (dispatch :token-images/create-many records)
                    :scene (dispatch :scene-images/create-many records)
-                   :props (dispatch :props-images/create-many records)))))))
+                   :props (dispatch :props-images/create-many records)))))
+            (.catch (fn [err] (.error js/console "[ogres:image] upload failed" err)))))
       (fn [files]
-        (.then (js/Promise.all (into-array (into [] (map process-file) files)))
-               (fn [files]
-                 (doseq [[_ image _] files]
-                   (publish :image/create (:data image)))))))))
+        (-> (js/Promise.all (into-array (into [] (map process-file) files)))
+            (.then
+             (fn [files]
+               (doseq [[_ image _] files]
+                 (publish :image/create (:data image)))))
+            (.catch (fn [err] (.error js/console "[ogres:image] upload failed" err))))))))
 
 (defn use-image
   "React hook which accepts a string that uniquely identifies an image

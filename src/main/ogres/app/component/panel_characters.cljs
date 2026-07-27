@@ -18,7 +18,8 @@
      :token-image/default-label
      :token-image/default-size
      :token-image/default-light
-     :token-image/character-sheet]}
+     :token-image/character-sheet
+     :token-image/character-sheet-id]}
    {:root/character-sheets
     [:character-sheet/id
      :character-sheet/name
@@ -343,6 +344,37 @@
                          ")\"></button>")))
            "</div>"))))
 
+(defn ^:private render-slot-widget [level max-n spent]
+  (let [lvl (escape-js-string (str level))
+        remaining (max 0 (- max-n spent))
+        label (if (= (str level) "0") "Cantrips" (str "Level " level))]
+    (str "<div class=\"slot-uses resource-uses\" data-level=\"" lvl "\" data-max=\"" max-n "\" data-kind=\"slots\">"
+         "<span class=\"resource-name\">" (escape-html label)
+         " <span class=\"muted\">(" remaining "/" max-n ")</span></span>"
+         (apply str
+                (for [i (range max-n)]
+                  (str "<button type=\"button\" class=\"use-box"
+                       (when (< i spent) " used")
+                       "\" data-index=\"" i "\" onclick=\"ogresExpendSlot('" lvl "',"
+                       (if (< i spent) "-1" "1")
+                       ")\"></button>")))
+         "</div>")))
+
+(defn ^:private prepared-entries [block]
+  (let [prepared (or (:prepared block) {})]
+    (->> prepared
+         (map (fn [[lvl spells]]
+                [(str (if (keyword? lvl) (name lvl) lvl))
+                 (if (sequential? spells) spells [spells])]))
+         (sort-by (fn [[lvl _]] (or (js/Number.parseInt lvl 10) 99))))))
+
+(defn ^:private slots-entries [block]
+  (->> (or (:slots block) {})
+       (keep (fn [[k v]]
+               (when (number? v)
+                 [(str (if (keyword? k) (name k) k)) v])))
+       (sort-by (fn [[lvl _]] (or (js/Number.parseInt lvl 10) 99)))))
+
 (defn ^:private render-sheet-html [raw-sheet image-hash popup-id sheet-id]
   (let [s (sheet/ensure-runtime raw-sheet)
         v2? (sheet/v2? s)
@@ -549,12 +581,17 @@
                            (str "<p class=\"muted\">DC " (:dc block)
                                 (when (:attackBonus block) (str " · Attack +" (:attackBonus block)))
                                 "</p>"))
+                         (let [slot-rows (slots-entries block)]
+                           (when (seq slot-rows)
+                             (str "<div class=\"slot-trackers\" style=\"margin:8px 0 12px\">"
+                                  (apply str
+                                         (for [[lvl max-n] slot-rows]
+                                           (render-slot-widget
+                                            lvl max-n (sheet/slots-expended s lvl))))
+                                  "</div>")))
                          (apply str
-                                (for [[lvl spells] (or (:prepared block) {})]
-                                  (str "<p><strong>Level " (escape-html (str lvl))
-                                       (when-let [slots (get (:slots block) (keyword (str lvl)))]
-                                         (str " (" slots " slots)"))
-                                       ":</strong> "
+                                (for [[lvl spells] (prepared-entries block)]
+                                  (str "<p><strong>Level " (escape-html lvl) ":</strong> "
                                        (escape-html (str/join ", " spells))
                                        "</p>"))))))
            "<p class=\"muted\">No spellcasting data.</p>")
@@ -642,6 +679,7 @@
          "window.ogresSkillRoll=function(label,mod){post({type:\"ogres:skill-roll\",label:label,modifier:mod});};"
          "window.ogresInitiativeRoll=function(){post({type:\"ogres:initiative-roll\",hash:window.ogresImageHash});};"
          "window.ogresSpendResource=function(id,amount){post({type:\"ogres:spend-resource\",resourceId:id,amount:amount});};"
+         "window.ogresExpendSlot=function(level,amount){post({type:\"ogres:expend-slot\",level:level,amount:amount});};"
          "window.ogresRest=function(kind){post({type:\"ogres:rest\",kind:kind});};"
          "window.ogresChangeHp=function(sign){var n=parseInt(document.getElementById(\"hpDelta\").value,10)||1;post({type:\"ogres:change-hp\",delta:sign*n});};"
          "window.ogresApplyRuntime=function(data){"
@@ -652,7 +690,7 @@
          "if(curEl&&hp.current!=null)curEl.textContent=String(hp.current);"
          "if(subEl){var t=\"HP / \"+(hp.max!=null?hp.max:\"?\");if(hp.temp>0)t+=\" · Temp \"+hp.temp;subEl.textContent=t;}"
          "var spent=data.resourceSpent||{};"
-         "document.querySelectorAll(\".resource-pool,.resource-uses\").forEach(function(el){"
+         "document.querySelectorAll(\".resource-pool,.resource-uses:not(.slot-uses)\").forEach(function(el){"
          "var id=el.getAttribute(\"data-id\");"
          "var max=parseInt(el.getAttribute(\"data-max\"),10)||0;"
          "var s=spent[id];if(s==null)s=0;"
@@ -665,6 +703,19 @@
          "btn.setAttribute(\"onclick\",\"ogresSpendResource('\"+id+\"',\"+(i<s?-1:1)+\")\");"
          "});"
          "}"
+         "});"
+         "var slots=data.slotsExpended||{};"
+         "document.querySelectorAll(\".slot-uses\").forEach(function(el){"
+         "var level=el.getAttribute(\"data-level\");"
+         "var max=parseInt(el.getAttribute(\"data-max\"),10)||0;"
+         "var s=slots[level];if(s==null)s=0;"
+         "var name=el.querySelector(\".resource-name\");"
+         "if(name){var label=level===\"0\"?\"Cantrips\":(\"Level \"+level);"
+         "name.innerHTML=label+' <span class=\"muted\">('+Math.max(0,max-s)+'/'+max+')</span>';}"
+         "el.querySelectorAll(\".use-box\").forEach(function(btn,i){"
+         "if(i<s)btn.classList.add(\"used\");else btn.classList.remove(\"used\");"
+         "btn.setAttribute(\"onclick\",\"ogresExpendSlot('\"+level+\"',\"+(i<s?-1:1)+\")\");"
+         "});"
          "});"
          "};"
          "document.querySelectorAll(\".tab\").forEach(function(tab){tab.addEventListener(\"click\",function(){document.querySelectorAll(\".tab\").forEach(function(t){t.classList.remove(\"active\")});document.querySelectorAll(\".tab-panel\").forEach(function(p){p.classList.remove(\"active\")});tab.classList.add(\"active\");document.querySelector('[data-panel=\"'+tab.getAttribute(\"data-tab\")+'\"]').classList.add(\"active\");});});"
@@ -706,17 +757,21 @@
       (.postMessage popup (clj->js payload) js/window.location.origin))))
 
 (defn ^:private resolve-library-sheet-id
-  "Library sheet id for a linked token sheet map (equality, then name)."
-  [sheets linked-sheet]
-  (or (some (fn [{:character-sheet/keys [id data]}]
-              (when (= data linked-sheet) (str id)))
-            sheets)
-      (when (map? linked-sheet)
-        (let [want (sheet/sheet-name linked-sheet)]
-          (some (fn [{:character-sheet/keys [id data]}]
-                  (when (= want (sheet/sheet-name data)) (str id)))
-                sheets)))
-      ""))
+  "Library sheet id for a linked token sheet map (id, equality, then name)."
+  ([sheets linked-sheet]
+   (resolve-library-sheet-id sheets linked-sheet nil))
+  ([sheets linked-sheet prefer-id]
+   (or (when (and prefer-id (some #(= (str (:character-sheet/id %)) (str prefer-id)) sheets))
+         (str prefer-id))
+       (some (fn [{:character-sheet/keys [id data]}]
+               (when (= data linked-sheet) (str id)))
+             sheets)
+       (when (map? linked-sheet)
+         (let [want (sheet/sheet-name linked-sheet)]
+           (some (fn [{:character-sheet/keys [id data]}]
+                   (when (= want (sheet/sheet-name data)) (str id)))
+                 sheets)))
+       "")))
 
 (defn ^:private reply-sheet-runtime! [conn popup-id sheet-id]
   (when (and (not-empty popup-id) (not-empty sheet-id))
@@ -824,6 +879,13 @@
                        (let [popup-id (.-popupId data)]
                          (dispatch :character-sheets/spend-resource
                                    sid (.-resourceId data) (.-amount data))
+                         (reply-sheet-runtime! conn popup-id sid)))
+
+                     "ogres:expend-slot"
+                     (when-let [sid (not-empty (.-sheetId data))]
+                       (let [popup-id (.-popupId data)]
+                         (dispatch :character-sheets/expend-slot
+                                   sid (.-level data) (.-amount data))
                          (reply-sheet-runtime! conn popup-id sid)))
 
                      "ogres:rest"
@@ -1033,7 +1095,9 @@
             ($ :ul.character-token-list
               (for [token tokens
                     :let [sheet (:token-image/character-sheet token)
-                          selected-id (resolve-library-sheet-id sheets sheet)]]
+                          selected-id (resolve-library-sheet-id
+                                       sheets sheet
+                                       (:token-image/character-sheet-id token))]]
                 ($ :li.character-token-list-item
                   {:key (:image/hash token)}
                   ($ :.character-token-heading

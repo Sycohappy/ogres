@@ -21,7 +21,9 @@
 (declare tick-all-sheet-effects-txs
          find-library-sheet-id
          write-sheet-current-hp-txs
-         sheet-link-txs)
+         sheet-link-txs
+         linked-token-image-ids
+         linked-token-ids)
 
 (defn ^:private linear [dx dy rx ry]
   (fn [n] (+ (* (/ (- n dx) (- dy dx)) (- ry rx)) rx)))
@@ -659,6 +661,8 @@
   (let [user  (ds/entity data [:db/ident :user])
         image (ds/entity data [:image/hash hash])
         sheet (when image (:token-image/character-sheet image))
+        sheet-id (or (when image (:token-image/character-sheet-id image))
+                     (find-library-sheet-id data sheet))
         {{camera :db/id
           shift :camera/point
           scale :camera/scale
@@ -680,6 +684,8 @@
       (conj [:db/add -1 :token/label (sheet/sheet-name sheet)])
       (some? sheet)
       (conj [:db/add -1 :token/character-sheet sheet])
+      (some? sheet-id)
+      (conj [:db/add -1 :token/character-sheet-id sheet-id])
       (sheet/pc-sheet? sheet)
       (conj [:db/add -1 :token/flags #{:player}])
       (number? (sheet/runtime-current-hp sheet))
@@ -1008,7 +1014,7 @@
               old (:initiative/health token)
               new-health (f old parsed)
               sheet (:token/character-sheet token)
-              sheet-id (find-library-sheet-id data sheet)]
+              sheet-id (find-library-sheet-id data sheet (:token/character-sheet-id token))]
           (concat
            [{:db/id id :initiative/health new-health}]
            (when (and sheet-id (sheet/v2? sheet) (number? new-health))
@@ -1131,6 +1137,7 @@
   event-tx-fn :token-images/change-character-sheet
   [data _ hash sheet]
   (let [image (ds/entity data [:image/hash hash])
+        sheet-id (when sheet (find-library-sheet-id data sheet))
         token-ids (when (:db/id image)
                     (ds/q '[:find [?e ...]
                             :in $ ?img
@@ -1138,8 +1145,11 @@
                           data (:db/id image)))]
     (concat
      (if (some? sheet)
-       [[:db/add [:image/hash hash] :token-image/character-sheet sheet]]
-       [[:db/retract [:image/hash hash] :token-image/character-sheet]])
+       (cond-> [[:db/add [:image/hash hash] :token-image/character-sheet sheet]]
+         sheet-id
+         (conj [:db/add [:image/hash hash] :token-image/character-sheet-id sheet-id]))
+       [[:db/retract [:image/hash hash] :token-image/character-sheet]
+        [:db/retract [:image/hash hash] :token-image/character-sheet-id]])
      (when (seq token-ids)
        (event-tx-fn data :token/change-character-sheet token-ids sheet)))))
 
@@ -1148,21 +1158,25 @@
           PC sheets also mark the token as :player and seed initiative HP."}
   event-tx-fn :token/change-character-sheet
   [data _ idxs sheet]
-  (mapcat
-   (fn [id]
-     (let [token (ds/entity data id)
-           flags (or (:token/flags token) #{})
-           hp (sheet/runtime-current-hp sheet)]
-       (if (some? sheet)
-         (cond-> [{:db/id id :token/character-sheet sheet}]
-           (sheet/pc-sheet? sheet)
-           (conj {:db/id id :token/flags (conj flags :player)})
-           (number? hp)
-           (conj {:db/id id :initiative/health hp})
-           (str/blank? (or (:token/label token) ""))
-           (conj {:db/id id :token/label (sheet/sheet-name sheet)}))
-         [[:db/retract id :token/character-sheet]])))
-   idxs))
+  (let [sheet-id (when sheet (find-library-sheet-id data sheet))]
+    (mapcat
+     (fn [id]
+       (let [token (ds/entity data id)
+             flags (or (:token/flags token) #{})
+             hp (sheet/runtime-current-hp sheet)]
+         (if (some? sheet)
+           (cond-> [{:db/id id :token/character-sheet sheet}]
+             sheet-id
+             (conj {:db/id id :token/character-sheet-id sheet-id})
+             (sheet/pc-sheet? sheet)
+             (conj {:db/id id :token/flags (conj flags :player)})
+             (number? hp)
+             (conj {:db/id id :initiative/health hp})
+             (str/blank? (or (:token/label token) ""))
+             (conj {:db/id id :token/label (sheet/sheet-name sheet)}))
+           [[:db/retract id :token/character-sheet]
+            [:db/retract id :token/character-sheet-id]])))
+     idxs)))
 
 ;; -- Character Sheets --
 (defmethod
@@ -1219,29 +1233,22 @@
   (let [entry (ds/entity data [:character-sheet/id id])
         old-sheet (:character-sheet/data entry)
         name (trim (:name sheet))
-        linked-images
-        (if (some? old-sheet)
-          (ds/q '[:find [?e ...]
-                  :in $ ?sheet
-                  :where [?e :token-image/character-sheet ?sheet]]
-                data old-sheet)
-          [])
-        linked-tokens
-        (if (some? old-sheet)
-          (ds/q '[:find [?e ...]
-                  :in $ ?sheet
-                  :where [?e :token/character-sheet ?sheet]]
-                data old-sheet)
-          [])]
+        next-sheet (assoc sheet :name name)
+        linked-images (linked-token-image-ids data id old-sheet)
+        linked-tokens (linked-token-ids data id old-sheet)]
     (when (and entry (seq name))
       (concat
        [{:db/id (:db/id entry)
          :character-sheet/name name
-         :character-sheet/data (assoc sheet :name name)}]
+         :character-sheet/data next-sheet}]
        (for [entity-id linked-images]
-         {:db/id entity-id :token-image/character-sheet (assoc sheet :name name)})
+         {:db/id entity-id
+          :token-image/character-sheet next-sheet
+          :token-image/character-sheet-id id})
        (for [entity-id linked-tokens]
-         {:db/id entity-id :token/character-sheet (assoc sheet :name name)})))))
+         {:db/id entity-id
+          :token/character-sheet next-sheet
+          :token/character-sheet-id id})))))
 
 (defmethod
   ^{:doc "Removes a character sheet from the library by id."}
@@ -1250,19 +1257,57 @@
   [[:db/retractEntity [:character-sheet/id id]]])
 
 (defn ^:private find-library-sheet-id
-  "Resolves a library :character-sheet/id for a token's sheet map copy."
-  [data sheet]
-  (when (map? sheet)
-    (let [sheets (:root/character-sheets (ds/entity data [:db/ident :root]))]
-      (or (some (fn [e]
-                  (when (= (:character-sheet/data e) sheet)
-                    (:character-sheet/id e)))
-                sheets)
-          (let [want (sheet/sheet-name sheet)]
-            (some (fn [e]
-                    (when (= want (sheet/sheet-name (:character-sheet/data e)))
-                      (:character-sheet/id e)))
-                  sheets))))))
+  "Resolves a library :character-sheet/id. Prefer prefer-id when valid."
+  ([data sheet]
+   (find-library-sheet-id data sheet nil))
+  ([data sheet prefer-id]
+   (or (when (and (string? prefer-id)
+                  (not (str/blank? prefer-id))
+                  (ds/entity data [:character-sheet/id prefer-id]))
+         prefer-id)
+       (when (map? sheet)
+         (let [sheets (:root/character-sheets (ds/entity data [:db/ident :root]))]
+           (or (some (fn [e]
+                       (when (= (:character-sheet/data e) sheet)
+                         (:character-sheet/id e)))
+                     sheets)
+               (let [want (sheet/sheet-name sheet)]
+                 (some (fn [e]
+                         (when (= want (sheet/sheet-name (:character-sheet/data e)))
+                           (:character-sheet/id e)))
+                       sheets))))))))
+
+(defn ^:private linked-token-image-ids
+  [data sheet-id old-sheet]
+  (into []
+        (distinct)
+        (concat
+         (when (some? sheet-id)
+           (ds/q '[:find [?e ...]
+                   :in $ ?sid
+                   :where [?e :token-image/character-sheet-id ?sid]]
+                 data sheet-id))
+         (when (some? old-sheet)
+           (ds/q '[:find [?e ...]
+                   :in $ ?sheet
+                   :where [?e :token-image/character-sheet ?sheet]]
+                 data old-sheet)))))
+
+(defn ^:private linked-token-ids
+  [data sheet-id old-sheet]
+  (into []
+        (distinct)
+        (concat
+         (when (some? sheet-id)
+           (ds/q '[:find [?e ...]
+                   :in $ ?sid
+                   :where [?e :token/character-sheet-id ?sid]]
+                 data sheet-id))
+         (when (some? old-sheet)
+           (ds/q '[:find [?e ...]
+                   :in $ ?sheet
+                   :where [?e :token/character-sheet ?sheet]]
+                 data old-sheet)))))
 
 (defn ^:private write-sheet-current-hp-txs
   "Sets sheet runtime current HP (keeps temp) and refreshes linked copies."
@@ -1277,61 +1322,61 @@
         (sheet-link-txs data sheet-id next)))))
 
 (defn ^:private sheet-link-txs
-  "Updates library sheet + linked token-image/token copies (map-equality sync)."
+  "Updates library sheet + linked token-image/token copies (id + map sync)."
   [data id next-sheet]
   (let [entry (ds/entity data [:character-sheet/id id])
         old-sheet (:character-sheet/data entry)
         next-sheet (sheet/with-display-name next-sheet)
         name (sheet/sheet-name next-sheet)
-        linked-images
-        (if (some? old-sheet)
-          (ds/q '[:find [?e ...]
-                  :in $ ?sheet
-                  :where [?e :token-image/character-sheet ?sheet]]
-                data old-sheet)
-          [])
-        linked-tokens
-        (if (some? old-sheet)
-          (ds/q '[:find [?e ...]
-                  :in $ ?sheet
-                  :where [?e :token/character-sheet ?sheet]]
-                data old-sheet)
-          [])]
+        linked-images (linked-token-image-ids data id old-sheet)
+        linked-tokens (linked-token-ids data id old-sheet)]
     (when entry
       (concat
        [{:db/id (:db/id entry)
          :character-sheet/name name
          :character-sheet/data next-sheet}]
        (for [entity-id linked-images]
-         {:db/id entity-id :token-image/character-sheet next-sheet})
+         {:db/id entity-id
+          :token-image/character-sheet next-sheet
+          :token-image/character-sheet-id id})
        (for [entity-id linked-tokens]
-         {:db/id entity-id :token/character-sheet next-sheet})))))
+         {:db/id entity-id
+          :token/character-sheet next-sheet
+          :token/character-sheet-id id})))))
 
 (defn ^:private tokens-linked-to-sheet
-  "Token entity ids carrying find-sheet (map equality) or whose image is linked."
-  [data find-sheet]
-  (when (some? find-sheet)
-    (into []
-          (distinct)
-          (concat
-           (ds/q '[:find [?e ...]
-                   :in $ ?sheet
-                   :where [?e :token/character-sheet ?sheet]]
-                 data find-sheet)
-           (ds/q '[:find [?e ...]
-                   :in $ ?sheet
-                   :where
-                   [?img :token-image/character-sheet ?sheet]
-                   [?e :token/image ?img]]
-                 data find-sheet)))))
+  "Token entity ids linked by sheet id and/or map equality (incl. via image)."
+  ([data find-sheet]
+   (tokens-linked-to-sheet data find-sheet nil))
+  ([data find-sheet sheet-id]
+   (into []
+         (distinct)
+         (concat
+          (linked-token-ids data sheet-id find-sheet)
+          (when (some? sheet-id)
+            (ds/q '[:find [?e ...]
+                    :in $ ?sid
+                    :where
+                    [?img :token-image/character-sheet-id ?sid]
+                    [?e :token/image ?img]]
+                  data sheet-id))
+          (when (some? find-sheet)
+            (ds/q '[:find [?e ...]
+                    :in $ ?sheet
+                    :where
+                    [?img :token-image/character-sheet ?sheet]
+                    [?e :token/image ?img]]
+                  data find-sheet))))))
 
 (defn ^:private sync-token-health-txs
   "Mirrors hp-sheet runtime HP onto initiative/health.
    find-sheet is the pre-update map used for DataScript equality lookup."
   ([data sheet]
-   (sync-token-health-txs data sheet sheet))
+   (sync-token-health-txs data sheet sheet nil))
   ([data find-sheet hp-sheet]
-   (let [tokens (tokens-linked-to-sheet data find-sheet)
+   (sync-token-health-txs data find-sheet hp-sheet nil))
+  ([data find-sheet hp-sheet sheet-id]
+   (let [tokens (tokens-linked-to-sheet data find-sheet sheet-id)
          current (get-in (sheet/ensure-runtime hp-sheet) [:runtime :hp :current])]
      (when (and (number? current) (seq tokens))
        (for [id tokens]
@@ -1364,12 +1409,8 @@
         level (str level)]
     (when (and entry (sheet/v2? old))
       (let [s (sheet/ensure-runtime old)
-            max-slots (or (get-in s [:spellcasting 0 :slots (keyword level)])
-                          (get-in s [:spellcasting 0 :slots level])
-                          99)
-            spent (or (get-in s [:runtime :slotsExpended level])
-                      (get-in s [:runtime :slotsExpended (keyword level)])
-                      0)
+            max-slots (or (get (sheet/spell-slots-map s) level) 99)
+            spent (sheet/slots-expended s level)
             next-spent (max 0 (min max-slots (+ spent amount)))
             next (assoc-in s [:runtime :slotsExpended level] next-spent)]
         (sheet-link-txs data sheet-id next)))))
@@ -1396,7 +1437,7 @@
               [(min max-hp (- cur delta)) temp])
             next (assoc-in s [:runtime :hp] {:current next-cur :temp next-temp})
             txs (sheet-link-txs data sheet-id next)]
-        (concat txs (sync-token-health-txs data old next))))))
+        (concat txs (sync-token-health-txs data old next sheet-id))))))
 
 (defmethod
   ^{:doc "Sets temporary HP on a sheet."}
@@ -1444,7 +1485,7 @@
             next (assoc s :runtime cleared)
             txs (sheet-link-txs data sheet-id next)]
         (concat txs (when (= kind :long-rest)
-                      (sync-token-health-txs data old next)))))))
+                      (sync-token-health-txs data old next sheet-id)))))))
 
 (defmethod
   ^{:doc "Applies a catalog entry (already mapped) onto a library sheet."}
@@ -1677,6 +1718,7 @@
    :token/auras
    :token/image
    :token/character-sheet
+   :token/character-sheet-id
    :prop/image])
 
 (def ^:private clipboard-copy-select

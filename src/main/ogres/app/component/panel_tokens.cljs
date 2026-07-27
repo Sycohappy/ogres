@@ -35,7 +35,8 @@
       [:image/hash :image/size]}
      :token-image/default-label
      :token-image/url
-     :token-image/character-sheet]}])
+     :token-image/character-sheet
+     :token-image/character-sheet-id]}])
 
 (def ^:private query-actions
   [{:root/user [:user/host]}

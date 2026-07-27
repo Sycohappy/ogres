@@ -480,6 +480,7 @@
            :token/auras
            {:token/image [:token-image/url :image/hash :image/public :token-image/character-sheet]}
            :token/character-sheet
+           :token/character-sheet-id
            {:scene/_initiative [:db/id :initiative/turn]}]}
          {:scene/shapes
           [:db/id

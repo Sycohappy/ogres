@@ -375,6 +375,33 @@
   [sheet]
   (vec (or (:spellcasting sheet) [])))
 
+(defn spell-slots-map
+  "Map of level string → max slots, merged across spellcasting blocks."
+  [sheet]
+  (reduce
+   (fn [acc block]
+     (merge-with max acc
+                 (into {}
+                       (keep (fn [[k v]]
+                               (when (number? v)
+                                 [(str (if (keyword? k) (name k) k)) v])))
+                       (:slots block))))
+   {}
+   (spellcasting sheet)))
+
+(defn slots-expended
+  [sheet level]
+  (let [s (ensure-runtime sheet)
+        level (str level)]
+    (or (get-in s [:runtime :slotsExpended level])
+        (get-in s [:runtime :slotsExpended (keyword level)])
+        0)))
+
+(defn slots-remaining
+  [sheet level]
+  (let [max-n (or (get (spell-slots-map sheet) (str level)) 0)]
+    (max 0 (- max-n (slots-expended sheet level)))))
+
 (defn inventory
   [sheet]
   (or (:inventory sheet) {}))

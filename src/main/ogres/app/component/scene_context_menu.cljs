@@ -258,8 +258,11 @@
                 [:db/ident :root])
         sheets (or (:root/character-sheets result) [])
         current (first (values :token/character-sheet))
+        current-id (first (values :token/character-sheet-id))
         selected-id
-        (or (some (fn [{:character-sheet/keys [id data]}]
+        (or (when (and current-id (some #(= (str (:character-sheet/id %)) (str current-id)) sheets))
+              (str current-id))
+            (some (fn [{:character-sheet/keys [id data]}]
                     (when (= data current) (str id)))
                   sheets)
             (when (map? current)
@@ -334,15 +337,16 @@
         library  (or (:root/character-sheets sheets-q) [])
         sheet    (:token/character-sheet (first data))
         hash     (:image/hash (:token/image (first data)))
-        sheet-id (when (map? sheet)
-                   (or (some (fn [{:character-sheet/keys [id data]}]
-                               (when (= data sheet) (str id)))
-                             library)
-                       (let [want (sheet/sheet-name sheet)]
-                         (some (fn [{:character-sheet/keys [id data]}]
-                                 (when (= want (sheet/sheet-name data)) (str id)))
-                               library))
-                       ""))]
+        sheet-id (or (not-empty (:token/character-sheet-id (first data)))
+                     (when (map? sheet)
+                       (or (some (fn [{:character-sheet/keys [id data]}]
+                                   (when (= data sheet) (str id)))
+                                 library)
+                           (let [want (sheet/sheet-name sheet)]
+                             (some (fn [{:character-sheet/keys [id data]}]
+                                     (when (= want (sheet/sheet-name data)) (str id)))
+                                   library))))
+                     "")]
     ($ context-menu-fn
       {:render-toolbar
        (fn [{:keys [selected on-change]}]

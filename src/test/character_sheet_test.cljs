@@ -40,6 +40,11 @@
                :cha {:score 16 :modifier 3 :save 9 :proficient true}}
    :attacks [sample-v2-attack]
    :resources [{:id "lay-on-hands" :name "Lay on Hands" :kind "pool" :max 25 :recharge "long-rest"}]
+   :spellcasting [{:name "Paladin"
+                   :ability "cha"
+                   :dc 14
+                   :slots {"1" 4 "2" 2}
+                   :prepared {"1" ["command"] "2" ["aid"]}}]
    :runtime {:hp {:current 64 :temp 0} :resourceSpent {} :slotsExpended {} :effects []}})
 
 (deftest test-attack-modifier
@@ -169,9 +174,16 @@
     (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))]
       (is (= 5 (sheet/resource-spent sheet "lay-on-hands")))
       (is (= 20 (sheet/resource-remaining sheet "lay-on-hands"))))
+    (dispatch conn :character-sheets/expend-slot id "1" 1)
+    (dispatch conn :character-sheets/expend-slot id "1" 1)
+    (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))]
+      (is (= 2 (sheet/slots-expended sheet "1")))
+      (is (= 2 (sheet/slots-remaining sheet "1")))
+      (is (= 2 (sheet/slots-remaining sheet "2"))))
     (dispatch conn :character-sheets/rest id :long-rest)
     (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))]
       (is (= 0 (sheet/resource-spent sheet "lay-on-hands")))
+      (is (= 0 (sheet/slots-expended sheet "1")))
       (is (= 64 (get-in sheet [:runtime :hp :current]))))))
 
 (deftest test-change-hp-temp-first-and-token-health
@@ -239,6 +251,7 @@
       (dispatch conn :token/change-character-sheet [token-id] data)
       (let [token (entity @conn token-id)]
         (is (= data (:token/character-sheet token)))
+        (is (= id (:token/character-sheet-id token)))
         (is (contains? (:token/flags token) :player))
         (is (= 64 (:initiative/health token)))
         (is (= "Argamon Flamebound" (:token/label token))))
@@ -246,12 +259,22 @@
       (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))
             token (entity @conn token-id)]
         (is (= 40 (:initiative/health token)))
-        (is (= 40 (get-in sheet [:runtime :hp :current]))))
+        (is (= 40 (get-in sheet [:runtime :hp :current])))
+        (is (= id (:token/character-sheet-id token))))
+      ;; After runtime drift, id-based sync still updates the token HP.
+      (dispatch conn :character-sheets/change-hp id 5)
+      (let [token (entity @conn token-id)
+            sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))]
+        (is (= 35 (get-in sheet [:runtime :hp :current])))
+        (is (= 35 (:initiative/health token)))
+        (is (= id (:token/character-sheet-id token))))
       (dispatch conn :token-images/change-character-sheet "pc-tok" nil)
       (let [token (entity @conn token-id)
             image (entity @conn [:image/hash "pc-tok"])]
         (is (nil? (:token-image/character-sheet image)))
-        (is (nil? (:token/character-sheet token)))))))
+        (is (nil? (:token-image/character-sheet-id image)))
+        (is (nil? (:token/character-sheet token)))
+        (is (nil? (:token/character-sheet-id token)))))))
 
 (deftest test-add-effect-ticks-on-round
   (let [conn (ds/conn-from-db (initial-data true))

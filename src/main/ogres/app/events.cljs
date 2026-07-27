@@ -3,6 +3,8 @@
             [datascript.core :as ds]
             [clojure.set :refer [union difference]]
             [clojure.string :as str :refer [trim]]
+            [ogres.app.catalog.core :as catalog]
+            [ogres.app.character-sheet :as sheet]
             [ogres.app.const :refer [grid-size half-size]]
             [ogres.app.geom :as geom]
             [ogres.app.initiative :as initiative]
@@ -15,6 +17,8 @@
 
 (def ^:private zoom-scales
   [0.15 0.30 0.50 0.75 0.90 1 1.25 1.50 2 3 4])
+
+(declare tick-all-sheet-effects-txs)
 
 (defn ^:private linear [dx dy rx ry]
   (fn [n] (+ (* (/ (- n dx) (- dy dx)) (- ry rx)) rx)))
@@ -827,9 +831,11 @@
           [{:db/id (:db/id scene)
             :initiative/turn (:db/id next)
             :initiative/played (:db/id next)}]
-          [[:db/retract (:db/id scene) :initiative/played]
-           [:db/retract (:db/id scene) :initiative/turn]
-           {:db/id (:db/id scene) :initiative/rounds (inc rounds)}]))
+          (into
+           [[:db/retract (:db/id scene) :initiative/played]
+            [:db/retract (:db/id scene) :initiative/turn]
+            {:db/id (:db/id scene) :initiative/rounds (inc rounds)}]
+           (tick-all-sheet-effects-txs data))))
       [{:db/id (:db/id scene) :initiative/rounds 1}])))
 
 (defmethod event-tx-fn :initiative/mark
@@ -1081,12 +1087,24 @@
   ^{:doc "Creates a blank character sheet in the library."}
   event-tx-fn :character-sheets/create-blank
   []
-  [{:db/ident :root
-    :root/character-sheets
-    [{:character-sheet/id (str (random-uuid))
-      :character-sheet/name "New Character"
-      :character-sheet/source "Created in Ogres"
-      :character-sheet/data {:name "New Character"}}]}])
+  (let [blank (sheet/with-display-name
+                (sheet/ensure-runtime
+                 {:version 2
+                  :identity {:name "New Character"}
+                  :vitals {:hp {:max 0 :average 0} :proficiencyBonus 2 :initiative {:bonus 0}}
+                  :abilities {}
+                  :skills {}
+                  :attacks []
+                  :features []
+                  :resources []
+                  :spellcasting []
+                  :inventory {}}))]
+    [{:db/ident :root
+      :root/character-sheets
+      [{:character-sheet/id (str (random-uuid))
+        :character-sheet/name "New Character"
+        :character-sheet/source "Created in Ogres"
+        :character-sheet/data blank}]}]))
 
 (defmethod
   ^{:doc "Updates a character sheet and refreshes copies linked to tokens."}
@@ -1124,6 +1142,225 @@
   event-tx-fn :character-sheets/remove
   [_ _ id]
   [[:db/retractEntity [:character-sheet/id id]]])
+
+(defn ^:private sheet-link-txs
+  "Updates library sheet + linked token-image/token copies (map-equality sync)."
+  [data id next-sheet]
+  (let [entry (ds/entity data [:character-sheet/id id])
+        old-sheet (:character-sheet/data entry)
+        next-sheet (sheet/with-display-name next-sheet)
+        name (sheet/sheet-name next-sheet)
+        linked-images
+        (if (some? old-sheet)
+          (ds/q '[:find [?e ...]
+                  :in $ ?sheet
+                  :where [?e :token-image/character-sheet ?sheet]]
+                data old-sheet)
+          [])
+        linked-tokens
+        (if (some? old-sheet)
+          (ds/q '[:find [?e ...]
+                  :in $ ?sheet
+                  :where [?e :token/character-sheet ?sheet]]
+                data old-sheet)
+          [])]
+    (when entry
+      (concat
+       [{:db/id (:db/id entry)
+         :character-sheet/name name
+         :character-sheet/data next-sheet}]
+       (for [entity-id linked-images]
+         {:db/id entity-id :token-image/character-sheet next-sheet})
+       (for [entity-id linked-tokens]
+         {:db/id entity-id :token/character-sheet next-sheet})))))
+
+(defn ^:private sync-token-health-txs
+  "Mirrors sheet runtime HP onto initiative/health for tokens with this sheet."
+  [data sheet]
+  (let [tokens (ds/q '[:find [?e ...]
+                       :in $ ?sheet
+                       :where [?e :token/character-sheet ?sheet]]
+                     data sheet)
+        current (get-in (sheet/ensure-runtime sheet) [:runtime :hp :current])]
+    (when (number? current)
+      (for [id tokens]
+        {:db/id id :initiative/health current}))))
+
+(defmethod
+  ^{:doc "Spends (or restores with negative amount) a sheet resource by id."}
+  event-tx-fn :character-sheets/spend-resource
+  [data _ sheet-id resource-id amount]
+  (let [entry (ds/entity data [:character-sheet/id sheet-id])
+        old (:character-sheet/data entry)
+        amount (or amount 1)]
+    (when (and entry (sheet/v2? old))
+      (let [s (sheet/ensure-runtime old)
+            res (sheet/resource-by-id s resource-id)
+            max-n (or (:max res) 0)
+            key (keyword (str resource-id))
+            spent (or (get-in s [:runtime :resourceSpent key]) 0)
+            next-spent (max 0 (min max-n (+ spent amount)))
+            next (assoc-in s [:runtime :resourceSpent key] next-spent)]
+        (sheet-link-txs data sheet-id next)))))
+
+(defmethod
+  ^{:doc "Expends or restores spell slots at the given level."}
+  event-tx-fn :character-sheets/expend-slot
+  [data _ sheet-id level amount]
+  (let [entry (ds/entity data [:character-sheet/id sheet-id])
+        old (:character-sheet/data entry)
+        amount (or amount 1)
+        level (str level)]
+    (when (and entry (sheet/v2? old))
+      (let [s (sheet/ensure-runtime old)
+            max-slots (or (get-in s [:spellcasting 0 :slots (keyword level)])
+                          (get-in s [:spellcasting 0 :slots level])
+                          99)
+            spent (or (get-in s [:runtime :slotsExpended level])
+                      (get-in s [:runtime :slotsExpended (keyword level)])
+                      0)
+            next-spent (max 0 (min max-slots (+ spent amount)))
+            next (assoc-in s [:runtime :slotsExpended level] next-spent)]
+        (sheet-link-txs data sheet-id next)))))
+
+(defmethod
+  ^{:doc "Applies damage (positive) or healing (negative) to sheet runtime HP."}
+  event-tx-fn :character-sheets/change-hp
+  [data _ sheet-id delta]
+  (let [entry (ds/entity data [:character-sheet/id sheet-id])
+        old (:character-sheet/data entry)
+        delta (or delta 0)]
+    (when (and entry (sheet/v2? old))
+      (let [s (sheet/ensure-runtime old)
+            max-hp (or (sheet/hp-max s) 0)
+            cur (get-in s [:runtime :hp :current] max-hp)
+            temp (get-in s [:runtime :hp :temp] 0)
+            ;; Damage eats temp first; healing only restores current.
+            [next-cur next-temp]
+            (if (pos? delta)
+              (let [after-temp (max 0 (- temp delta))
+                    absorbed (- temp after-temp)
+                    rest-dmg (- delta absorbed)]
+                [(max 0 (- cur rest-dmg)) after-temp])
+              [(min max-hp (- cur delta)) temp])
+            next (assoc-in s [:runtime :hp] {:current next-cur :temp next-temp})
+            txs (sheet-link-txs data sheet-id next)]
+        (concat txs (sync-token-health-txs data old))))))
+
+(defmethod
+  ^{:doc "Sets temporary HP on a sheet."}
+  event-tx-fn :character-sheets/set-temp-hp
+  [data _ sheet-id temp]
+  (let [entry (ds/entity data [:character-sheet/id sheet-id])
+        old (:character-sheet/data entry)]
+    (when (and entry (sheet/v2? old))
+      (let [s (sheet/ensure-runtime old)
+            next (assoc-in s [:runtime :hp :temp] (max 0 (or temp 0)))]
+        (sheet-link-txs data sheet-id next)))))
+
+(defmethod
+  ^{:doc "Short or long rest: resets resources by recharge and restores HP on long rest."}
+  event-tx-fn :character-sheets/rest
+  [data _ sheet-id kind]
+  (let [entry (ds/entity data [:character-sheet/id sheet-id])
+        old (:character-sheet/data entry)
+        kind (keyword (or kind :short-rest))]
+    (when (and entry (sheet/v2? old))
+      (let [s (sheet/ensure-runtime old)
+            reset? (fn [recharge]
+                     (let [r (keyword recharge)]
+                       (or (= kind :long-rest)
+                           (and (= kind :short-rest)
+                                (contains? #{:short-rest} r))
+                           (and (= kind :dawn)
+                                (contains? #{:dawn :long-rest} r)))))
+            cleared
+            (reduce (fn [runtime res]
+                      (if (reset? (:recharge res))
+                        (update runtime :resourceSpent
+                                dissoc (keyword (str (:id res))) (str (:id res)))
+                        runtime))
+                    (:runtime s)
+                    (sheet/resources s))
+            cleared (if (or (= kind :long-rest) (= kind :dawn))
+                      (assoc cleared :slotsExpended {})
+                      cleared)
+            cleared (if (= kind :long-rest)
+                      (-> cleared
+                          (assoc-in [:hp :current] (or (sheet/hp-max s) 0))
+                          (assoc :hitDiceSpent 0))
+                      cleared)
+            next (assoc s :runtime cleared)
+            txs (sheet-link-txs data sheet-id next)]
+        (concat txs (when (= kind :long-rest)
+                      (sync-token-health-txs data old)))))))
+
+(defmethod
+  ^{:doc "Applies a catalog entry (already mapped) onto a library sheet."}
+  event-tx-fn :character-sheets/apply-catalog
+  [data _ sheet-id catalog-entry]
+  (let [entry (ds/entity data [:character-sheet/id sheet-id])
+        old (:character-sheet/data entry)]
+    (when (and entry (map? catalog-entry))
+      (sheet-link-txs data sheet-id
+                      (catalog/apply-entry old catalog-entry)))))
+
+(defmethod
+  ^{:doc "Adds a timed effect to sheet runtime."}
+  event-tx-fn :character-sheets/add-effect
+  [data _ sheet-id effect]
+  (let [entry (ds/entity data [:character-sheet/id sheet-id])
+        old (:character-sheet/data entry)]
+    (when (and entry (sheet/v2? old) (map? effect))
+      (let [s (sheet/ensure-runtime old)
+            effect (merge {:id (str (random-uuid))
+                           :rounds-remaining (or (:rounds effect) (:rounds-remaining effect) 1)
+                           :concentration (boolean (:concentration effect))}
+                          effect)
+            effects (cond->> (vec (get-in s [:runtime :effects] []))
+                      (:concentration effect)
+                      (filterv (complement :concentration)))
+            next (assoc-in s [:runtime :effects] (conj effects effect))]
+        (sheet-link-txs data sheet-id next)))))
+
+(defmethod
+  ^{:doc "Removes a runtime effect by id."}
+  event-tx-fn :character-sheets/remove-effect
+  [data _ sheet-id effect-id]
+  (let [entry (ds/entity data [:character-sheet/id sheet-id])
+        old (:character-sheet/data entry)]
+    (when (and entry (sheet/v2? old))
+      (let [s (sheet/ensure-runtime old)
+            next (update-in s [:runtime :effects]
+                            (fn [fx]
+                              (filterv #(not= (str (:id %)) (str effect-id))
+                                       (or fx []))))]
+        (sheet-link-txs data sheet-id next)))))
+
+(defn ^:private tick-sheet-effects
+  "Decrements rounds-remaining; drops expired effects."
+  [sheet]
+  (let [s (sheet/ensure-runtime sheet)
+        effects (->> (get-in s [:runtime :effects] [])
+                     (mapv (fn [fx]
+                             (update fx :rounds-remaining
+                                     (fn [n] (max 0 (dec (or n 1)))))))
+                     (filterv #(pos? (or (:rounds-remaining %) 0))))]
+    (assoc-in s [:runtime :effects] effects)))
+
+(defn ^:private tick-all-sheet-effects-txs
+  "When initiative advances a round, tick effects on all v2 sheets in the library."
+  [data]
+  (let [ids (ds/q '[:find [?id ...]
+                    :where [?e :character-sheet/id ?id]]
+                  data)]
+    (mapcat
+     (fn [id]
+       (let [entry (ds/entity data [:character-sheet/id id])
+             old (:character-sheet/data entry)]
+         (when (and entry (sheet/v2? old) (seq (get-in old [:runtime :effects])))
+           (sheet-link-txs data id (tick-sheet-effects old)))))
+     ids)))
 
 ;; --- Masks ---
 (defmethod

@@ -288,6 +288,11 @@
         (when-not (roll20-re-find #"(?i)^none$" value)
           (mapv str/lower-case (parse-list value)))))))
 
+(defn ^:private roll20-sheet? [text]
+  (and (re-find #"(?i)\bNAME\b" text)
+       (re-find #"(?i)ARMOR\s*\n\s*CLASS" text)
+       (re-find #"(?i)STRENGTH\s*\n\s*[+-]?\d+\s*\n\s*MODIFIER" text)))
+
 (defn ^:private roll20-section-body [text header end-pattern]
   (when-let [m (re-find (re-pattern (str "(?is)" header "\\s*\\nNAME[^\n]*\\n([\\s\\S]*?)(?=\\n(?:"
                                             end-pattern
@@ -504,27 +509,221 @@
                 {}
                 entries)))
 
-(defn ^:private roll20-actions [text]
+(defn ^:private roll20-parse-section-entries [text header end-pattern]
+  (roll20-parse-name-notes (or (roll20-section-body text header end-pattern) [])))
+
+(defn ^:private roll20-actions-by-economy [text]
   (let [attacks (roll20-section-body text "ATTACKS"
                                      "WEAPON MASTERIES|ACTIONS|BONUS ACTIONS|DEFENSES|COMBAT REFERENCE")
         weapons (roll20-section-body text "WEAPONS & DAMAGE CANTRIPS"
                                        "CLASS FEATURES|SPECIES TRAITS|FEATS|CHA\\s")
-        actions (roll20-section-body text "ACTIONS"
-                                     "BONUS ACTIONS|REACTIONS|FREE ACTIONS|SPELLS")
-        bonus   (roll20-section-body text "BONUS ACTIONS"
-                                     "REACTIONS|FREE ACTIONS|SPELLS")
-        reactions (roll20-section-body text "REACTIONS"
-                                       "FREE ACTIONS|SPELLS")
-        entries (roll20-dedupe-actions
-                 (into []
-                       (concat (roll20-parse-attack-table (or attacks []))
-                               (roll20-parse-name-notes (or actions []))
-                               (map #(update % :name (fn [n] (str n " (Bonus Action)"))) 
-                                    (roll20-parse-name-notes (or bonus [])))
-                               (map #(update % :name (fn [n] (str n " (Reaction)"))) 
-                                    (roll20-parse-name-notes (or reactions [])))
-                               (roll20-parse-attack-table (or weapons [])))))]
-    (vec (remove #(str/blank? (str/join " " (:entries %))) entries))))
+        actions (roll20-parse-section-entries text "ACTIONS"
+                                              "BONUS ACTIONS|REACTIONS|FREE ACTIONS|SPELLS")
+        bonus (roll20-parse-section-entries text "BONUS ACTIONS"
+                                            "REACTIONS|FREE ACTIONS|SPELLS")
+        reactions (roll20-parse-section-entries text "REACTIONS"
+                                                "FREE ACTIONS|SPELLS")
+        free (roll20-parse-section-entries text "FREE ACTIONS"
+                                           "SPELLS|FEATURES|EQUIPMENT")
+        attack-entries (roll20-dedupe-actions
+                        (into []
+                              (concat (roll20-parse-attack-table (or attacks []))
+                                      (roll20-parse-attack-table (or weapons [])))))]
+    {:attacks (vec (remove #(str/blank? (str/join " " (:entries %))) attack-entries))
+     :action (vec (remove #(str/blank? (str/join " " (:entries %))) actions))
+     :bonus (vec (remove #(str/blank? (str/join " " (:entries %))) bonus))
+     :reaction (vec (remove #(str/blank? (str/join " " (:entries %))) reactions))
+     :free (vec (remove #(str/blank? (str/join " " (:entries %))) free))}))
+
+(defn ^:private roll20-actions [text]
+  "Legacy flat action list for older callers; prefers economy-separated parse."
+  (let [{:keys [attacks action bonus reaction]} (roll20-actions-by-economy text)]
+    (vec
+     (concat attacks action
+             (map #(update % :name (fn [n] (str n " (Bonus Action)"))) bonus)
+             (map #(update % :name (fn [n] (str n " (Reaction)"))) reaction)))))
+
+(defn ^:private roll20-skills [text]
+  (when-let [m (re-find #"(?is)SKILLS\s*\n([\s\S]*?)(?=\n(?:TOOLS|PASSIVE|DEFENSES|LANGUAGES|RESISTANCES|ATTACKS|ACTIONS)|$)" text)]
+    (let [body (str/replace (str (second m)) #"\n" " ")
+          pairs (re-seq #"([A-Za-z][A-Za-z\s]+?)\s*([+-]\d+)" body)]
+      (when (seq pairs)
+        (into {}
+              (for [[_ name mod] pairs]
+                [(keyword (str/lower-case (str/replace (str/trim name) #"\s+" "-")))
+                 {:modifier (js/parseInt mod 10)
+                  :proficient true}]))))))
+
+(defn ^:private roll20-proficiency-bonus [text]
+  (when-let [m (re-find #"(?i)PROFICIENCY\s*BONUS\s*\n?([+-]?\d+)" text)]
+    (js/parseInt (second m) 10)))
+
+(defn ^:private roll20-background [text]
+  (some-> (re-find #"(?is)BACKGROUND\s*\n\s*([^\n]+)" text) second str/trim))
+
+(defn ^:private roll20-level [text]
+  (when-let [m (re-find #"(?i)\b(?:LEVEL|LVL)\s*[:=]?\s*(\d+)\b" text)]
+    (js/parseInt (second m) 10)))
+
+(defn ^:private roll20-xp [text]
+  (when-let [m (re-find #"(?i)XP\s*\n?\s*(\d+)\s*/\s*(\d+)" text)]
+    {:current (js/parseInt (nth m 1) 10)
+     :next (js/parseInt (nth m 2) 10)}))
+
+(defn ^:private roll20-current-hp [text]
+  (when-let [m (re-find #"(?i)HIT POINTS\s*\n(?:TEMP\s*\n(\d+)\s*\n)?(\d+)\s*\nCURRENT\s*\n(\d+)\s*\nMAX" text)]
+    {:temp (or (some-> (nth m 1) (js/parseInt 10)) 0)
+     :current (js/parseInt (nth m 2) 10)
+     :max (js/parseInt (nth m 3) 10)}))
+
+(defn ^:private roll20-weapon-masteries [text]
+  (when-let [lines (roll20-section-body text "WEAPON MASTERIES"
+                                        "ACTIONS|BONUS ACTIONS|DEFENSES|ATTACKS")]
+    (vec
+     (for [line lines
+           :let [s (roll20-line line)]
+           :when (and (seq s) (not (roll20-table-skip? line)))
+           :let [[_ name mastery] (re-find #"(?i)^(.+?)\s*\(([^)]+)\)\s*$" s)]]
+       (if name
+         {:name (str/trim name) :mastery (str/trim mastery)}
+         {:name s})))))
+
+(defn ^:private entry->v2-feature [economy {:keys [name entries]}]
+  {:id (str (str/lower-case (str/replace (or name "feature") #"\s+" "-")) "-" (name economy))
+   :name name
+   :economy (keyword economy)
+   :entries (or entries [])})
+
+(defn ^:private attack-entry->v2 [{:keys [name entries]}]
+  (let [description (str/join " " (or entries []))
+        bonus (some (fn [pattern]
+                      (when-let [m (re-find pattern description)]
+                        (js/parseInt (nth m 1) 10)))
+                    [#"(?i)attack\s+roll[^+\d-]*([+-]\d+)"
+                     #"(?i)([+-]\d+)\s+to hit"
+                     #"(?i)\+(\d+)"])
+        exprs (vec
+               (for [[_ count sides mod type]
+                     (re-seq #"\((\d+)d(\d+)(?:\s*\+\s*(\d+))?\)(?:\s+([A-Za-z]+))?" description)]
+                 (cond-> {:id (str count "d" sides)
+                          :count (js/parseInt count 10)
+                          :sides (js/parseInt sides 10)
+                          :modifier (or (some-> mod (js/parseInt 10)) 0)}
+                   type (assoc :type (str/lower-case type)))))
+        ;; Also try table-style "1d8+4 bludgeoning" without parens.
+        exprs (if (seq exprs)
+                exprs
+                (vec
+                 (for [[_ count sides mod type]
+                       (re-seq #"(?i)(\d+)d(\d+)(?:\s*\+\s*(\d+))?(?:\s+([A-Za-z]+))?" description)]
+                   (cond-> {:id (str count "d" sides)
+                            :count (js/parseInt count 10)
+                            :sides (js/parseInt sides 10)
+                            :modifier (or (some-> mod (js/parseInt 10)) 0)}
+                     type (assoc :type (str/lower-case type))))))]
+    (cond-> {:id (str/lower-case (str/replace (or name "attack") #"\s+" "-"))
+             :name name
+             :kind (if (or bonus (seq exprs)) "attack" "action")
+             :description description
+             :entries (or entries [])}
+      bonus (assoc :bonus bonus)
+      (seq exprs) (assoc :damage exprs))))
+
+(defn ^:private parse-int-mod [value]
+  (when (some? value)
+    (let [parsed (js/parseInt (str value) 10)]
+      (when-not (js/isNaN parsed) parsed))))
+
+(defn ^:private parse-roll20-v2 [text]
+  (when-let [name (roll20-name text)]
+    (let [economy (roll20-actions-by-economy text)
+          hp (roll20-hp text)
+          cur (roll20-current-hp text)
+          abilities (roll20-abilities text)
+          pb (or (roll20-proficiency-bonus text) 0)
+          class (roll20-class text)
+          species (roll20-species text)
+          attacks (mapv attack-entry->v2 (:attacks economy))
+          features (vec
+                    (concat
+                     (map #(entry->v2-feature :action %) (:action economy))
+                     (map #(entry->v2-feature :bonus %) (:bonus economy))
+                     (map #(entry->v2-feature :reaction %) (:reaction economy))
+                     (map #(entry->v2-feature :free %) (:free economy))))
+          max-hp (or (:max cur) (:average hp) 0)
+          init-bonus (or (parse-int-mod (get-in (roll20-initiative text) [:bonus])) 0)]
+      (cond-> {:version 2
+               :name name
+               :identity (cond-> {:name name}
+                           class (assoc :class class)
+                           species (assoc :species species)
+                           (roll20-background text) (assoc :background (roll20-background text))
+                           (roll20-level text) (assoc :level (roll20-level text))
+                           (roll20-xp text) (assoc :xp (roll20-xp text))
+                           (roll20-alignment text) (assoc :alignment (roll20-alignment text))
+                           (roll20-languages text) (assoc :languages (roll20-languages text)))
+               :vitals (cond-> {:proficiencyBonus pb
+                                :passivePerception (or (roll20-passive text) 10)
+                                :initiative {:bonus init-bonus}}
+                         (roll20-ac text) (assoc :ac {:value (first (roll20-ac text)) :from []})
+                         hp (assoc :hp {:max max-hp
+                                        :average max-hp
+                                        :formula (:formula hp)})
+                         (roll20-speed text) (assoc :speed (roll20-speed text))
+                         (roll20-resistances text) (assoc :resistances (roll20-resistances text))
+                         (roll20-weapon-masteries text) (assoc :weaponMasteries (roll20-weapon-masteries text)))
+               :abilities (into {}
+                                (for [[kw score] abilities]
+                                  [kw {:score score
+                                       :modifier (js/Math.floor (/ (- score 10) 2))
+                                       :save (js/Math.floor (/ (- score 10) 2))
+                                       :proficient false}]))
+               :skills (or (roll20-skills text) {})
+               :attacks attacks
+               :features features
+               :resources []
+               :spellcasting []
+               :inventory {}
+               :runtime {:hp {:current (or (:current cur) max-hp)
+                              :temp (or (:temp cur) 0)}
+                         :slotsExpended {}
+                         :resourceSpent {}
+                         :effects []}
+               :hasToken true
+               :hasFluff true
+               ;; Legacy dual-read keys
+               :ac (or (roll20-ac text) [])
+               :hp (or hp {:average max-hp})
+               :speed (or (roll20-speed text) {})
+               :initiative {:bonus (str (if (neg? init-bonus) "" "+") init-bonus)}
+               :passive (or (roll20-passive text) 10)
+               :languages (or (roll20-languages text) [])
+               :resist (or (roll20-resistances text) [])}
+        (seq abilities) (merge abilities)
+        class (assoc :type (str/lower-case class))
+        species (assoc :subtype species)
+        (seq (:action economy)) (assoc :action (vec (concat (:attacks economy) (:action economy))))
+        (seq (:bonus economy)) (assoc :bonus (:bonus economy))
+        (seq (:reaction economy)) (assoc :reaction (:reaction economy))))))
+
+(defn ^:private parse-roll20 [text]
+  (or (parse-roll20-v2 text)
+      (when-let [name (roll20-name text)]
+        (let [actions (roll20-actions text)]
+          (cond-> {:name name}
+            (roll20-class text) (assoc :type (str/lower-case (roll20-class text)))
+            (roll20-species text) (assoc :subtype (roll20-species text))
+            (roll20-alignment text) (assoc :alignment (roll20-alignment text))
+            (roll20-ac text) (assoc :ac (roll20-ac text))
+            (roll20-hp text) (assoc :hp (roll20-hp text))
+            (roll20-speed text) (assoc :speed (roll20-speed text))
+            (roll20-initiative text) (assoc :initiative (roll20-initiative text))
+            (roll20-abilities text) (merge (roll20-abilities text))
+            (roll20-passive text) (assoc :passive (roll20-passive text))
+            (roll20-languages text) (assoc :languages (roll20-languages text))
+            (roll20-resistances text) (assoc :resist (roll20-resistances text))
+            (seq actions) (assoc :action actions)
+            true (assoc :hasToken true :hasFluff true))))))
 
 (def ^:private roll20-stat-long-labels
   #{"hit points" "speed" "saving throws" "skills"
@@ -1006,29 +1205,6 @@
       (.error js/console "[ogres:import:parser] roll20 stat block parse error" (.-message e))
       {:valid? false :sheets [] :errors [(.-message e)]})))
 
-(defn ^:private roll20-sheet? [text]
-  (and (re-find #"(?i)\bNAME\b" text)
-       (re-find #"(?i)ARMOR\s*\n\s*CLASS" text)
-       (re-find #"(?i)STRENGTH\s*\n\s*[+-]?\d+\s*\n\s*MODIFIER" text)))
-
-(defn ^:private parse-roll20 [text]
-  (when-let [name (roll20-name text)]
-    (let [actions (roll20-actions text)]
-      (cond-> {:name name}
-        (roll20-class text) (assoc :type (str/lower-case (roll20-class text)))
-        (roll20-species text) (assoc :subtype (roll20-species text))
-        (roll20-alignment text) (assoc :alignment (roll20-alignment text))
-        (roll20-ac text) (assoc :ac (roll20-ac text))
-        (roll20-hp text) (assoc :hp (roll20-hp text))
-        (roll20-speed text) (assoc :speed (roll20-speed text))
-        (roll20-initiative text) (assoc :initiative (roll20-initiative text))
-        (roll20-abilities text) (merge (roll20-abilities text))
-        (roll20-passive text) (assoc :passive (roll20-passive text))
-        (roll20-languages text) (assoc :languages (roll20-languages text))
-        (roll20-resistances text) (assoc :resist (roll20-resistances text))
-        (seq actions) (assoc :action actions)
-        true (assoc :hasToken true :hasFluff true)))))
-
 (defn parse-roll20-text [text]
   (try
     (let [text (normalize-text text)]
@@ -1042,9 +1218,6 @@
     (catch :default e
       (.error js/console "[ogres:import:parser] roll20 parse error" (.-message e))
       {:valid? false :sheets [] :errors [(.-message e)]})))
-
-(defn parse-pdf-text [text]
-  (parse-pdf-text* (normalize-pdf-text text)))
 
 (defn ^:private parse-pdf-text* [text]
   (let [roll20 (parse-roll20-text text)]
@@ -1086,6 +1259,9 @@
                                                (:errors stat-block)
                                                (:errors visual)
                                                (:errors markdown)))]}))))))))))
+
+(defn parse-pdf-text [text]
+  (parse-pdf-text* (normalize-pdf-text text)))
 
 (defn ^:private json-sheets [parsed]
   (cond

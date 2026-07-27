@@ -109,13 +109,37 @@
                 str/trim))
       "Action"))
 
+(defn structured-damage-expressions
+  "Normalizes structured attack damage options into parse-damage-expressions shape."
+  [damage-options]
+  (when (seq damage-options)
+    (mapv (fn [d]
+            (cond-> {:count (or (:count d) 1)
+                     :sides (or (:sides d) 6)
+                     :modifier (or (:modifier d) 0)}
+              (:type d) (assoc :type (str (:type d)))
+              (:label d) (assoc :label (:label d))
+              (:id d) (assoc :id (:id d))))
+          damage-options)))
+
+(defn damage-expressions
+  "Dual-read: use structured damage options when provided, else parse prose."
+  ([text]
+   (parse-damage-expressions text))
+  ([text structured]
+   (or (not-empty (structured-damage-expressions structured))
+       (parse-damage-expressions text))))
+
 (defn damage-chat-body
   "Rolls one damage expression from an attack or saving throw chat message.
-  index selects which parsed expression to roll (one button → one expression)."
+  index selects which parsed expression to roll (one button → one expression).
+  Optional structured damage options prefer v2 attack.damage over prose scan."
   ([attack-body]
-   (damage-chat-body attack-body 0))
+   (damage-chat-body attack-body 0 nil))
   ([attack-body index]
-   (when-let [exprs (parse-damage-expressions attack-body)]
+   (damage-chat-body attack-body index nil))
+  ([attack-body index structured]
+   (when-let [exprs (damage-expressions attack-body structured)]
      (when-let [expr (get exprs index)]
        (let [{:keys [count rolls total type] :as result}
              (roll-damage-expression expr)
@@ -129,21 +153,36 @@
          (str name " damage" type-suffix " — " total " (" detail ")"))))))
 
 (defn action-chat-body
-  "Builds chat text for a sheet action, rolling d20 + modifier for attacks."
-  [name description]
-  (let [base (if (str/blank? description)
-               name
-               (str name ". " description))]
-    (if-let [roll (attack-roll-result description)]
-      (str base " — " (format-attack-roll roll))
-      base)))
+  "Builds chat text for a sheet action, rolling d20 + modifier for attacks.
+  Optional attack-bonus overrides prose parsing (structured v2 attacks)."
+  ([name description]
+   (action-chat-body name description nil))
+  ([name description attack-bonus]
+   (let [base (if (str/blank? description)
+                name
+                (str name ". " description))]
+     (if-let [modifier (or attack-bonus (attack-modifier description))]
+       (let [die (inc (rand-int 20))
+             total (+ die modifier)]
+         (str base " — " (format-attack-roll {:die die :modifier modifier :total total})))
+       base))))
 
 (defn modifier-from-sheet
-  "Returns the initiative modifier for the given character sheet map."
+  "Returns the initiative modifier for the given character sheet map.
+  Dual-read: vitals.initiative.bonus (v2), initiative.bonus (v1), or DEX mod."
   [sheet]
   (cond
+    (number? (get-in sheet [:vitals :initiative :bonus]))
+    (get-in sheet [:vitals :initiative :bonus])
+
+    (get-in sheet [:vitals :initiative :bonus])
+    (or (parse-modifier (get-in sheet [:vitals :initiative :bonus])) 0)
+
     (get-in sheet [:initiative :bonus])
     (or (parse-modifier (get-in sheet [:initiative :bonus])) 0)
+
+    (number? (get-in sheet [:abilities :dex :score]))
+    (js/Math.floor (/ (- (get-in sheet [:abilities :dex :score]) 10) 2))
 
     (number? (:dex sheet))
     (js/Math.floor (/ (- (:dex sheet) 10) 2))

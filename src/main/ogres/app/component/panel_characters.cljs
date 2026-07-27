@@ -1,5 +1,7 @@
 (ns ogres.app.component.panel-characters
   (:require [clojure.string :as str]
+            [ogres.app.catalog.core :as catalog]
+            [ogres.app.character-sheet :as sheet]
             [ogres.app.component.character-sheet-editor :refer [sheet-editor]]
             [datascript.core :as ds]
             [ogres.app.hooks :as hooks]
@@ -304,107 +306,358 @@
          "})();"
          "</script>")))
 
-(defn ^:private render-sheet-html [sheet image-hash popup-id]
-  (let [title (:name sheet)
-        ac (format-list (:ac sheet))
-        hp (:hp sheet)
-        hp-text (when (map? hp) (str (:average hp) " (" (:formula hp) ")"))
-        abilities (for [ability [:str :dex :con :int :wis :cha]
-                        :let [score (get sheet ability)]
-                        :when (number? score)]
-                    (let [label (str/upper-case (name ability))]
-                      (str "<button type=\"button\" class=\"ability\""
-                           " onclick=\"ogresPostAbilityRoll('" (escape-js-string label) "'," score ")\""
-                           " title=\"Roll d20 " (ability-mod score) "\">"
-                           "<span class=\"ability-name\">" label "</span>"
-                           "<span class=\"ability-score\">" score "</span>"
-                           "<span class=\"ability-mod\">(" (ability-mod score) ")</span>"
-                           "</button>")))
-        actions (or (:action sheet) [])
-        bonus (or (:bonus sheet) [])
-        reactions (or (:reaction sheet) [])
-        clickable (into [] (concat actions bonus reactions))
-        bonus-offset (count actions)
-        reaction-offset (+ bonus-offset (count bonus))]
+(defn ^:private signed [n]
+  (str (if (neg? n) "" "+") n))
+
+(defn ^:private format-speed-v2 [speed]
+  (when (map? speed)
+    (->> speed
+         (map (fn [[k v]]
+                (cond
+                  (number? v) (str (name k) " " v " ft.")
+                  (map? v) (str (name k) " " (or (:number v) v)
+                                (when (:condition v) (str " (" (:condition v) ")")))
+                  :else (str (name k) " " v))))
+         (str/join ", "))))
+
+(defn ^:private render-resource-widget [res spent]
+  (let [id (escape-js-string (str (:id res)))
+        max-n (or (:max res) 0)
+        remaining (max 0 (- max-n spent))
+        kind (or (:kind res) "uses")]
+    (if (= kind "pool")
+      (str "<div class=\"resource-pool\" data-id=\"" id "\">"
+           "<span class=\"resource-name\">" (escape-html (:name res)) "</span>"
+           "<button type=\"button\" onclick=\"ogresSpendResource('" id "',1)\">−</button>"
+           "<span class=\"resource-value\">" remaining " / " max-n "</span>"
+           "<button type=\"button\" onclick=\"ogresSpendResource('" id "',-1)\">+</button>"
+           "</div>")
+      (str "<div class=\"resource-uses\" data-id=\"" id "\">"
+           "<span class=\"resource-name\">" (escape-html (:name res)) "</span>"
+           (apply str
+                  (for [i (range max-n)]
+                    (str "<button type=\"button\" class=\"use-box"
+                         (when (< i spent) " used")
+                         "\" onclick=\"ogresSpendResource('" id "',"
+                         (if (< i spent) "-1" "1")
+                         ")\"></button>")))
+           "</div>"))))
+
+(defn ^:private render-sheet-html [raw-sheet image-hash popup-id sheet-id]
+  (let [s (sheet/ensure-runtime raw-sheet)
+        v2? (sheet/v2? s)
+        title (sheet/sheet-name s)
+        ident (sheet/identity-block s)
+        abilities (sheet/abilities-map s)
+        skills (sheet/skills-map s)
+        attacks (sheet/attacks s)
+        features (sheet/features s)
+        resources (sheet/resources s)
+        runtime (sheet/runtime-hp s)
+        max-hp (or (sheet/hp-max s) 0)
+        ac (sheet/ac-value s)
+        ac-from (sheet/ac-from s)
+        speed (format-speed-v2 (sheet/speed-map s))
+        init-bonus (sheet/initiative-bonus s)
+        pb (sheet/proficiency-bonus s)
+        spellcasting (sheet/spellcasting s)
+        inventory (sheet/inventory s)
+        effects (sheet/effects s)
+        masteries (or (get-in s [:vitals :weaponMasteries])
+                      (keep (fn [a] (when (:mastery a)
+                                      {:name (:name a) :mastery (:mastery a)}))
+                            attacks))
+        clickable
+        (vec
+         (concat
+          (map (fn [a]
+                 {:name (:name a)
+                  :description (sheet/format-attack-description a)
+                  :bonus (:bonus a)
+                  :damage (:damage a)})
+               attacks)
+          (map (fn [f]
+                 {:name (:name f)
+                  :description (str/join " " (or (:entries f) []))})
+               (filter #(contains? #{:action :bonus :reaction :free}
+                                   (keyword (:economy %)))
+                       features))))
+        sheet-id-js (escape-js-string (or sheet-id ""))]
     (str "<!doctype html><html><head><meta charset=\"utf-8\"/>"
          "<title>" (escape-html title) "</title>"
          "<style>"
-         "body{font-family:Georgia,serif;margin:0;padding:20px;background:#f5f0e6;color:#1a1a1a;line-height:1.5}"
-         "h1{margin:0 0 16px;font-size:28px;font-weight:700;border-bottom:2px solid #8b4513;padding-bottom:8px}"
-         ".core-stats{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:12px;margin-bottom:16px}"
-         ".stat{background:#fff;border:1px solid #c4b59a;border-radius:6px;padding:10px;text-align:center}"
-         ".stat-label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;color:#666;margin-bottom:4px}"
-         ".stat-value{display:block;font-size:18px;font-weight:700}"
-         ".stat-initiative .initiative-value{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap}"
-         ".initiative-bonus{font-size:18px;font-weight:700}"
-         ".initiative-roll-btn{background:#f5f0e6;border:1px dotted #8b4513;border-radius:4px;color:#8b4513;cursor:pointer;font-size:18px;line-height:1;padding:2px 6px}"
-         ".initiative-roll-btn:hover{background:#e8dcc8}"
-         ".initiative-result{font-size:14px;font-weight:700;color:#444;width:100%}"
-         ".abilities{display:grid;grid-template-columns:repeat(6,minmax(70px,1fr));gap:8px;margin-bottom:16px}"
-         ".ability{background:#fff;border:1px solid #c4b59a;border-radius:6px;padding:8px;text-align:center;cursor:pointer;font-family:inherit;color:inherit;line-height:inherit;width:100%}"
-         ".ability:hover{background:#e8dcc8;border-color:#8b4513}"
-         ".ability-name{display:block;font-size:11px;font-weight:700;color:#666}"
-         ".ability-score{display:block;font-size:20px;font-weight:700;margin:2px 0}"
-         ".ability-mod{display:block;font-size:13px;color:#444}"
-         ".info-block{background:#fff;border:1px solid #c4b59a;border-radius:6px;padding:12px 16px;margin-bottom:16px}"
-         ".info-row{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid #eee}"
-         ".info-row:last-child{border-bottom:none}"
-         ".info-label{font-weight:700;min-width:140px;color:#555}"
-         ".info-value{flex:1;word-break:break-word}"
-         ".section{margin-bottom:16px}"
-         "h2{margin:0 0 8px;font-size:16px;font-weight:700;border-bottom:1px solid #c4b59a;padding-bottom:4px}"
-         ".entry{margin:0 0 8px;font-size:14px}"
-         ".spell-level{margin:0 0 8px;font-size:14px}"
-         ".spell-ability{margin:0 0 8px;font-size:13px;color:#555}"
-         ".spell-block-title{margin:12px 0 6px;font-size:14px;font-weight:700}"
-         ".section.spells{margin-top:16px}"
-         ".entry-action{display:block;width:100%;text-align:left;background:transparent;border:1px solid transparent;border-radius:4px;padding:6px 8px;margin:0 -8px 8px;cursor:pointer;font:inherit;color:inherit;line-height:inherit}"
-         ".entry-action:hover{background:#e8dcc8;border-color:#c4b59a}"
-         "details{margin-top:16px;font-size:13px}"
-         "pre{background:#222;color:#eee;padding:12px;border-radius:6px;overflow:auto;white-space:pre-wrap;font-size:12px}"
+         "*{box-sizing:border-box}"
+         "body{margin:0;font-family:Segoe UI,Helvetica,Arial,sans-serif;background:#12141a;color:#e8e8e8;}"
+         ".sheet{display:flex;flex-direction:column;min-height:100vh}"
+         ".header{padding:16px 20px;border-bottom:1px solid #2a2e38;background:#1a1d24}"
+         ".header h1{margin:0 0 4px;font-size:26px;font-weight:700;color:#fff}"
+         ".subheader{color:#b8b8b8;font-size:13px}"
+         ".toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}"
+         ".btn{background:#2a2e38;border:1px solid #3a4050;color:#eee;border-radius:6px;padding:6px 10px;cursor:pointer;font:inherit}"
+         ".btn:hover{background:#343a48}"
+         ".btn-accent{background:#8b1e2d;border-color:#a5283a}"
+         ".btn-accent:hover{background:#a5283a}"
+         ".layout{display:grid;grid-template-columns:220px 1fr 240px;gap:12px;padding:12px;flex:1}"
+         "@media(max-width:960px){.layout{grid-template-columns:1fr}}"
+         ".panel{background:#1a1d24;border:1px solid #2a2e38;border-radius:10px;padding:12px}"
+         ".panel h2{margin:0 0 10px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#d4a84b}"
+         ".ability{display:grid;grid-template-columns:1fr auto auto;gap:6px;align-items:center;padding:6px 0;border-bottom:1px solid #252833}"
+         ".ability button,.skill button,.attack-row button,.feature-row button{background:transparent;border:0;color:inherit;cursor:pointer;font:inherit;text-align:left;padding:0}"
+         ".ability-score{font-size:18px;font-weight:700}"
+         ".ability-mod,.skill-mod{color:#f0f0f0;font-weight:700}"
+         ".skill{display:flex;justify-content:space-between;gap:8px;padding:4px 0;font-size:13px}"
+         ".prof-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;background:#444}"
+         ".prof-dot.on{background:#c0392b}"
+         ".tabs{display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap}"
+         ".tab{background:#12141a;border:1px solid #2a2e38;color:#aaa;border-radius:6px 6px 0 0;padding:6px 10px;cursor:pointer;font:inherit}"
+         ".tab.active{background:#222632;color:#fff;border-bottom-color:#222632}"
+         ".tab-panel{display:none}.tab-panel.active{display:block}"
+         ".attack-row,.feature-row{display:grid;grid-template-columns:1.2fr .6fr .8fr 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #252833;font-size:13px;align-items:start}"
+         ".attack-row .name,.feature-row .name{font-weight:700;color:#fff}"
+         ".muted{color:#9aa0ad}"
+         ".dmg{color:#d4a84b}"
+         ".hp-block{text-align:center}"
+         ".hp-current{font-size:36px;font-weight:700}"
+         ".hp-sub{color:#9aa0ad;font-size:12px;margin-bottom:8px}"
+         ".hp-actions{display:flex;gap:6px;justify-content:center;margin-bottom:8px}"
+         ".ac-speed{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}"
+         ".stat-box{background:#12141a;border-radius:8px;padding:10px;text-align:center}"
+         ".stat-box .v{font-size:24px;font-weight:700}"
+         ".stat-box .l{font-size:11px;color:#9aa0ad;text-transform:uppercase}"
+         ".resource-pool,.resource-uses{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0;font-size:12px}"
+         ".resource-pool button,.use-box{background:#2a2e38;border:1px solid #3a4050;color:#eee;border-radius:4px;min-width:22px;height:22px;cursor:pointer}"
+         ".use-box.used{background:#c0392b;border-color:#c0392b}"
+         ".resource-value{font-weight:700}"
+         ".section-label{margin:14px 0 6px;font-size:12px;color:#d4a84b;text-transform:uppercase;letter-spacing:.06em}"
+         ".effect{background:#222632;border-radius:6px;padding:6px 8px;margin:4px 0;font-size:12px}"
          "</style></head><body>"
+         "<div class=\"sheet\" data-sheet-id=\"" sheet-id-js "\">"
+         "<div class=\"header\">"
          "<h1>" (escape-html title) "</h1>"
-         "<div class=\"core-stats\">"
-         (or (render-stat "Armor Class" ac) "")
-         (or (render-stat "Hit Points" hp-text) "")
-         (or (render-stat "Speed" (format-speed (:speed sheet))) "")
-         (render-initiative-stat sheet image-hash popup-id)
+         "<div class=\"subheader\">"
+         (escape-html
+          (str/join " · "
+                    (remove str/blank?
+                            [(when (:class ident)
+                               (str (:class ident)
+                                    (when (:level ident) (str " " (:level ident)))))
+                             (:species ident)
+                             (:background ident)
+                             (when-let [xp (:xp ident)]
+                               (str "XP " (:current xp) "/" (:next xp)))
+                             (str "PB +" pb)])))
          "</div>"
-         (when (seq abilities)
-           (str "<div class=\"abilities\">" (apply str abilities) "</div>"))
-         "<div class=\"info-block\">"
-         (or (render-info-row "Skills" (format-skills (:skill sheet))) "")
-         (or (render-info-row "Immunities" (format-list (:immune sheet))) "")
-         (or (render-info-row "Senses" (format-list (:senses sheet))) "")
-         (or (render-info-row "Languages" (format-list (:languages sheet))) "")
-         (or (render-info-row "Challenge Rating" (:cr sheet)) "")
-         (or (render-info-row "Proficiency Bonus" (:proficiency-bonus sheet)) "")
+         "<div class=\"toolbar\">"
+         "<button class=\"btn btn-accent\" type=\"button\" onclick=\"ogresInitiativeRoll()\">Initiative "
+         (escape-html (signed init-bonus)) "</button>"
+         "<button class=\"btn\" type=\"button\" onclick=\"ogresRest('short-rest')\">Short Rest</button>"
+         "<button class=\"btn\" type=\"button\" onclick=\"ogresRest('long-rest')\">Long Rest</button>"
+         "<span class=\"initiative-result muted\"></span>"
+         "</div></div>"
+         "<div class=\"layout\">"
+         ;; LEFT
+         "<aside class=\"panel\">"
+         "<h2>Abilities</h2>"
+         (apply str
+                (for [[kw {:keys [score modifier save proficient]}] abilities]
+                  (let [label (str/upper-case (name kw))]
+                    (str "<div class=\"ability\">"
+                         "<button type=\"button\" onclick=\"ogresAbilityRoll('" label "'," score ")\">"
+                         label "</button>"
+                         "<span class=\"ability-score\">" score "</span>"
+                         "<button type=\"button\" class=\"ability-mod\" title=\"Save "
+                         (signed save) (when proficient " (proficient)") "\" "
+                         "onclick=\"ogresSaveRoll('" label "'," save ")\">"
+                         (signed modifier) "</button></div>"))))
+         "<h2 style=\"margin-top:16px\">Skills</h2>"
+         (apply str
+                (for [[kw {:keys [modifier proficient]}] (sort-by (comp name first) skills)]
+                  (str "<div class=\"skill\">"
+                       "<button type=\"button\" onclick=\"ogresSkillRoll('"
+                       (escape-js-string (str/capitalize (name kw))) "'," modifier ")\">"
+                       "<span class=\"prof-dot" (when proficient " on") "\"></span>"
+                       (escape-html (str/capitalize (name kw)))
+                       "</button>"
+                       "<span class=\"skill-mod\">" (signed modifier) "</span></div>")))
+         "</aside>"
+         ;; CENTER
+         "<main class=\"panel\">"
+         "<div class=\"tabs\">"
+         "<button class=\"tab active\" type=\"button\" data-tab=\"combat\">Combat</button>"
+         "<button class=\"tab\" type=\"button\" data-tab=\"spells\">Spells</button>"
+         "<button class=\"tab\" type=\"button\" data-tab=\"inventory\">Inventory</button>"
+         "<button class=\"tab\" type=\"button\" data-tab=\"features\">Features</button>"
+         "<button class=\"tab\" type=\"button\" data-tab=\"notes\">Notes</button>"
          "</div>"
-         (or (render-entries "Traits" (traits-without-spells (:trait sheet))) "")
-         (or (render-spell-sections sheet) "")
-         (or (render-action-section actions) "")
-         (or (render-clickable-entry-section "Bonus Actions" bonus bonus-offset) "")
-         (or (render-clickable-entry-section "Reactions" reactions reaction-offset) "")
-         (or (render-entries "Legendary Actions" (:legendary sheet)) "")
-         "<details><summary>Raw JSON</summary><pre>"
-         (escape-html (js/JSON.stringify (clj->js sheet) nil 2))
+         "<div class=\"tab-panel active\" data-panel=\"combat\">"
+         "<div class=\"section-label\">Attacks</div>"
+         (if (seq attacks)
+           (apply str
+                  (map-indexed
+                   (fn [idx a]
+                     (str "<div class=\"attack-row\">"
+                          "<button type=\"button\" class=\"name\" onclick=\"ogresPostAction(" idx ")\">"
+                          (escape-html (:name a)) "</button>"
+                          "<span class=\"muted\">" (escape-html (or (:range a) "—")) "</span>"
+                          "<span>" (if (:bonus a) (str "+" (:bonus a) " Attack")
+                                       (when-let [sv (:save a)]
+                                         (str (str/upper-case (name (:ability sv))) " " (:dc sv))))
+                          "</span>"
+                          "<span class=\"dmg\">"
+                          (escape-html
+                           (str/join " / "
+                                     (map sheet/format-damage-option (or (:damage a) []))))
+                          "</span></div>"))
+                   attacks))
+           "<p class=\"muted\">No structured attacks.</p>")
+         (when (seq masteries)
+           (str "<div class=\"section-label\">Weapon Mastery</div>"
+                (apply str
+                       (for [m masteries]
+                         (str "<div class=\"muted\">" (escape-html (:name m))
+                              (when (:mastery m)
+                                (str " (" (escape-html (:mastery m)) ")"))
+                              "</div>")))))
+         (apply str
+                (for [economy [:action :bonus :reaction :free]
+                      :let [items (filterv #(= economy (keyword (:economy %))) features)]
+                      :when (seq items)]
+                  (str "<div class=\"section-label\">" (escape-html (str/upper-case (name economy))) "S</div>"
+                       (apply str
+                              (for [f items
+                                    :let [idx (some (fn [[i a]]
+                                                      (when (= (:name a) (:name f)) i))
+                                                    (map-indexed vector clickable))]]
+                                (str "<div class=\"feature-row\" style=\"grid-template-columns:1fr 2fr\">"
+                                     "<button type=\"button\" class=\"name\" onclick=\"ogresPostAction("
+                                     (or idx 0) ")\">"
+                                     (escape-html (:name f)) "</button>"
+                                     "<span class=\"muted\">"
+                                     (escape-html (str/join " " (or (:entries f) [])))
+                                     "</span></div>"
+                                     (when-let [rid (:resourceId f)]
+                                       (when-let [res (sheet/resource-by-id s rid)]
+                                         (render-resource-widget
+                                          res (sheet/resource-spent s rid))))))))))
+         "</div>"
+         "<div class=\"tab-panel\" data-panel=\"spells\">"
+         (if (seq spellcasting)
+           (apply str
+                  (for [block spellcasting]
+                    (str "<div class=\"section-label\">" (escape-html (or (:name block) "Spellcasting")) "</div>"
+                         (when (:dc block)
+                           (str "<p class=\"muted\">DC " (:dc block)
+                                (when (:attackBonus block) (str " · Attack +" (:attackBonus block)))
+                                "</p>"))
+                         (apply str
+                                (for [[lvl spells] (or (:prepared block) {})]
+                                  (str "<p><strong>Level " (escape-html (str lvl))
+                                       (when-let [slots (get (:slots block) (keyword (str lvl)))]
+                                         (str " (" slots " slots)"))
+                                       ":</strong> "
+                                       (escape-html (str/join ", " spells))
+                                       "</p>"))))))
+           "<p class=\"muted\">No spellcasting data.</p>")
+         "</div>"
+         "<div class=\"tab-panel\" data-panel=\"inventory\">"
+         (let [items (or (:items inventory) [])]
+           (if (seq items)
+             (apply str
+                    (for [item items]
+                      (str "<div class=\"feature-row\" style=\"grid-template-columns:1fr auto\">"
+                           "<span class=\"name\">" (escape-html (:name item)) "</span>"
+                           "<span class=\"muted\">" (when (:attuned item) "Attuned") "</span></div>")))
+             "<p class=\"muted\">Inventory empty.</p>"))
+         "</div>"
+         "<div class=\"tab-panel\" data-panel=\"features\">"
+         (apply str
+                (for [f (filter #(= :trait (keyword (:economy %))) features)]
+                  (str "<p><strong>" (escape-html (:name f)) ".</strong> "
+                       (escape-html (str/join " " (or (:entries f) []))) "</p>")))
+         "</div>"
+         "<div class=\"tab-panel\" data-panel=\"notes\">"
+         "<p class=\"muted\">Sheet version " (if v2? "2" "1")
+         (when-let [src (:source (meta raw-sheet))] (str " · " src))
+         "</p>"
+         "<details><summary>Raw JSON</summary><pre style=\"white-space:pre-wrap;font-size:11px;color:#ccc\">"
+         (escape-html (js/JSON.stringify (clj->js raw-sheet) nil 2))
          "</pre></details>"
-         (or (render-actions-handler clickable popup-id) "")
-         (render-ability-roll-handler popup-id)
+         "</div>"
+         "</main>"
+         ;; RIGHT
+         "<aside class=\"panel\">"
+         "<div class=\"hp-block\">"
+         "<div class=\"hp-current\">" (or (:current runtime) max-hp) "</div>"
+         "<div class=\"hp-sub\">HP / " max-hp
+         (when (pos? (or (:temp runtime) 0))
+           (str " · Temp " (:temp runtime)))
+         "</div>"
+         "<div class=\"hp-actions\">"
+         "<button class=\"btn btn-accent\" type=\"button\" onclick=\"ogresChangeHp(1)\">Damage</button>"
+         "<button class=\"btn\" type=\"button\" onclick=\"ogresChangeHp(-1)\">Heal</button>"
+         "</div>"
+         "<input id=\"hpDelta\" type=\"number\" min=\"1\" value=\"1\" style=\"width:64px;background:#12141a;border:1px solid #2a2e38;color:#eee;border-radius:4px;padding:4px\"/>"
+         "</div>"
+         "<div class=\"ac-speed\">"
+         "<div class=\"stat-box\"><div class=\"v\">" (or ac "—") "</div><div class=\"l\">Armor Class</div>"
+         (when (seq ac-from)
+           (str "<div class=\"muted\" style=\"font-size:10px;margin-top:4px\">"
+                (escape-html (str/join ", " ac-from)) "</div>"))
+         "</div>"
+         "<div class=\"stat-box\"><div class=\"v\" style=\"font-size:16px\">"
+         (escape-html (or speed "—")) "</div><div class=\"l\">Speed</div></div>"
+         "</div>"
+         "<h2>Defenses</h2>"
+         "<p class=\"muted\">Resistances: "
+         (escape-html (or (format-list (sheet/resistances s)) "—")) "</p>"
+         "<h2>Senses</h2>"
+         "<p class=\"muted\">" (escape-html (or (format-list (sheet/senses s)) "—")) "</p>"
+         "<h2>Languages</h2>"
+         "<p class=\"muted\">" (escape-html (or (format-list (sheet/languages s)) "—")) "</p>"
+         (when (seq resources)
+           (str "<h2>Resources</h2>"
+                (apply str
+                       (for [res resources]
+                         (render-resource-widget res (sheet/resource-spent s (:id res)))))))
+         (when (seq effects)
+           (str "<h2>Effects</h2>"
+                (apply str
+                       (for [fx effects]
+                         (str "<div class=\"effect\">"
+                              (escape-html (or (:name fx) "Effect"))
+                              " · " (or (:rounds-remaining fx) "?") " rnd"
+                              (when (:concentration fx) " · Conc")
+                              "</div>")))))
+         "</aside></div></div>"
+         "<script>"
+         "window.ogresPopupId=\"" (escape-js-string popup-id) "\";"
+         "window.ogresSheetId=\"" sheet-id-js "\";"
+         "window.ogresImageHash=\"" (escape-js-string image-hash) "\";"
+         "window.ogresActions=" (.stringify js/JSON (clj->js clickable)) ";"
+         "function post(msg){if(!window.opener)return;msg.popupId=window.ogresPopupId;msg.sheetId=window.ogresSheetId;window.opener.postMessage(msg,window.location.origin);}"
+         "window.ogresPostAction=function(idx){var action=window.ogresActions[idx];if(!action)return;post({type:\"ogres:chat-action\",name:action.name,description:action.description||\"\",bonus:action.bonus||null,damage:action.damage||null});};"
+         "window.ogresPostNamedAction=window.ogresPostAction;"
+         "window.ogresAbilityRoll=function(ability,score){post({type:\"ogres:ability-roll\",ability:ability,score:score});};"
+         "window.ogresSaveRoll=function(ability,mod){post({type:\"ogres:skill-roll\",label:ability+\" Save\",modifier:mod});};"
+         "window.ogresSkillRoll=function(label,mod){post({type:\"ogres:skill-roll\",label:label,modifier:mod});};"
+         "window.ogresInitiativeRoll=function(){post({type:\"ogres:initiative-roll\",hash:window.ogresImageHash});};"
+         "window.ogresSpendResource=function(id,amount){post({type:\"ogres:spend-resource\",resourceId:id,amount:amount});};"
+         "window.ogresRest=function(kind){post({type:\"ogres:rest\",kind:kind});};"
+         "window.ogresChangeHp=function(sign){var n=parseInt(document.getElementById(\"hpDelta\").value,10)||1;post({type:\"ogres:change-hp\",delta:sign*n});};"
+         "document.querySelectorAll(\".tab\").forEach(function(tab){tab.addEventListener(\"click\",function(){document.querySelectorAll(\".tab\").forEach(function(t){t.classList.remove(\"active\")});document.querySelectorAll(\".tab-panel\").forEach(function(p){p.classList.remove(\"active\")});tab.classList.add(\"active\");document.querySelector('[data-panel=\"'+tab.getAttribute(\"data-tab\")+'\"]').classList.add(\"active\");});});"
+         "window.addEventListener(\"message\",function(event){if(event.origin!==window.location.origin)return;var data=event.data;if(!data||data.popupId!==window.ogresPopupId)return;if(data.type===\"ogres:initiative-roll-result\"){var el=document.querySelector(\".initiative-result\");if(!el)return;if(data.error){el.textContent=data.error;return;}var modStr=data.modifier>=0?\"+\"+data.modifier:String(data.modifier);el.textContent=data.total+\" (\"+data.die+\" \"+modStr+\")\"+(data.count>1?\" ×\"+data.count:\"\");}});"
+         "</script>"
          "</body></html>")))
 
-(defn ^:private open-sheet-popout! [sheet image-hash]
+(defn ^:private open-sheet-popout! [sheet image-hash sheet-id]
   (let [popup-id (str (random-uuid))
-        actions (count (or (:action sheet) []))
-        bonus (count (or (:bonus sheet) []))
-        reactions (count (or (:reaction sheet) []))
-        body (render-sheet-html sheet image-hash popup-id)
-        popup (.open js/window "" "_blank" "popup,width=720,height=900")]
+        body (render-sheet-html sheet image-hash popup-id sheet-id)
+        popup (.open js/window "" "_blank" "popup,width=1280,height=900")]
     (log-chat-action! "open popout"
                       {:popupId popup-id
-                       :sheetName (:name sheet)
+                       :sheetName (sheet/sheet-name sheet)
                        :imageHash image-hash
-                       :actionCount (+ actions bonus reactions)
+                       :sheetId sheet-id
                        :popupBlocked (nil? popup)})
     (when popup
       (swap! popups assoc popup-id popup)
@@ -434,49 +687,49 @@
                            popup-id (.-popupId data)
                            db @conn
                            ids (initiative/scene-token-ids-by-image db hash)
-                           sheet (:token-image/character-sheet (ds/entity db [:image/hash hash]))]
-                       (if (empty? ids)
+                           sheet (or (:token-image/character-sheet
+                                      (ds/entity db [:image/hash hash]))
+                                     (when-let [sid (.-sheetId data)]
+                                       (:character-sheet/data
+                                        (ds/entity db [:character-sheet/id sid]))))]
+                       (if (and (empty? ids) (nil? sheet))
                          (reply-to-popout!
                           popup-id
                           {:type "ogres:initiative-roll-result"
                            :popupId popup-id
-                           :error "No tokens on scene for this image"})
+                           :error "No sheet or tokens available"})
                          (let [result (initiative/roll-result sheet)]
-                           (dispatch :initiative/roll-shared ids sheet result)
+                           (when (seq ids)
+                             (dispatch :initiative/roll-shared ids sheet result))
                            (reply-to-popout!
                             popup-id
                             (merge {:type "ogres:initiative-roll-result"
                                     :popupId popup-id
-                                    :count (count ids)}
+                                    :count (max 1 (count ids))}
                                    result)))))
 
                      "ogres:chat-action"
                      (let [popup-id (.-popupId data)
                            name (.-name data)
                            description (.-description data)
-                           modifier (initiative/attack-modifier description)
-                           body (action-chat-body name description)
+                           bonus (.-bonus data)
+                           body (initiative/action-chat-body name description bonus)
                            user (ds/entity @conn [:db/ident :user])
                            status (:session/status user)]
                        (log-chat-action! "received"
                                          {:popupId popup-id
                                           :name name
                                           :description description
-                                          :attackModifier modifier
+                                          :bonus bonus
                                           :body body
-                                          :rolled? (some? modifier)
                                           :session/status status})
                        (if (= status :connected)
-                         (do
-                           (log-chat-action! "dispatch :chat/send" {:body body})
-                           (dispatch :chat/send (random-uuid) body nil (js/Date.now)))
-                         (do
-                           (log-chat-action! "not connected" {:popupId popup-id})
-                           (reply-to-popout!
-                            popup-id
-                            {:type "ogres:chat-action-result"
-                             :popupId popup-id
-                             :error "Connect to a session to chat"}))))
+                         (dispatch :chat/send (random-uuid) body nil (js/Date.now))
+                         (reply-to-popout!
+                          popup-id
+                          {:type "ogres:chat-action-result"
+                           :popupId popup-id
+                           :error "Connect to a session to chat"})))
 
                      "ogres:ability-roll"
                      (let [ability (.-ability data)
@@ -490,6 +743,30 @@
                                mod-str (if (neg? mod-n) (str mod-n) (str "+" mod-n))
                                body    (str ability " — " total " (d20 " mod-str ")")]
                            (dispatch :chat/send (random-uuid) body nil (js/Date.now)))))
+
+                     "ogres:skill-roll"
+                     (let [label (.-label data)
+                           modifier (.-modifier data)
+                           user (ds/entity @conn [:db/ident :user])]
+                       (when (= (:session/status user) :connected)
+                         (let [die (inc (rand-int 20))
+                               total (+ die modifier)
+                               mod-str (if (neg? modifier) (str modifier) (str "+" modifier))
+                               body (str label " — " total " (d20 " mod-str ")")]
+                           (dispatch :chat/send (random-uuid) body nil (js/Date.now)))))
+
+                     "ogres:spend-resource"
+                     (when-let [sid (not-empty (.-sheetId data))]
+                       (dispatch :character-sheets/spend-resource
+                                 sid (.-resourceId data) (.-amount data)))
+
+                     "ogres:rest"
+                     (when-let [sid (not-empty (.-sheetId data))]
+                       (dispatch :character-sheets/rest sid (.-kind data)))
+
+                     "ogres:change-hp"
+                     (when-let [sid (not-empty (.-sheetId data))]
+                       (dispatch :character-sheets/change-hp sid (.-delta data)))
 
                      nil))))]
 
@@ -506,9 +783,13 @@
         tokens   (filter #(or host? (:image/public %)) (:root/token-images result))
         import!  (hooks/use-document-importer)
         import-input (uix/use-ref nil)
+        catalog-input (uix/use-ref nil)
         [editing-id set-editing-id] (uix/use-state nil)
         [import-error set-import-error] (uix/use-state nil)
-        [import-success set-import-success] (uix/use-state nil)]
+        [import-success set-import-success] (uix/use-state nil)
+        [catalog-query set-catalog-query] (uix/use-state "")
+        [catalog-msg set-catalog-msg] (uix/use-state nil)
+        catalog-hits (catalog/search catalog-query)]
     (hooks/use-subscribe
      :import/error
      (uix/use-callback
@@ -561,6 +842,69 @@
             ($ :p.character-management-message
               {:data-status "success"} import-success))))
       ($ :fieldset.fieldset
+        ($ :legend "5etools Catalog (private)")
+        ($ :div.form-notice
+          ($ :p
+            "Import privately obtained 5etools JSON (classFeature/item/spell/race). Kept in memory only — do not commit WotC text to git.")
+          ($ :.character-management-actions
+            ($ :button.button.button-neutral
+              {:type "button"
+               :on-click #(.. catalog-input -current (click))}
+              "Import catalog JSON")
+            ($ :button.button.button-neutral
+              {:type "button"
+               :on-click #(do (catalog/clear!) (set-catalog-msg "Catalog cleared."))}
+              "Clear catalog"))
+          ($ :input
+            {:type "file"
+             :hidden true
+             :accept ".json"
+             :ref catalog-input
+             :on-change
+             (fn [event]
+               (let [file (aget (.. event -target -files) 0)]
+                 (when file
+                   (let [reader (js/FileReader.)]
+                     (set! (.-onload reader)
+                           (fn [e]
+                             (try
+                               (let [parsed (js->clj (js/JSON.parse (.. e -target -result))
+                                                     :keywordize-keys true)
+                                     result (catalog/load-data! parsed (.-name file))]
+                                 (set-catalog-msg
+                                  (str "Loaded " (:count result) " catalog entries from "
+                                       (:source result))))
+                               (catch :default err
+                                 (set-catalog-msg (str "Catalog import failed: " (.-message err)))))))
+                     (.readAsText reader file)))
+                 (set! (.. event -target -value) "")))})
+          (when catalog-msg
+            ($ :p.character-management-message catalog-msg))
+          (when (seq (catalog/catalog))
+            ($ :div
+              ($ :input.text
+                {:type "text"
+                 :placeholder "Search catalog…"
+                 :value catalog-query
+                 :on-change #(set-catalog-query (.. % -target -value))
+                 :style {:width "100%" :margin "8px 0"}})
+              ($ :ul.character-sheet-list
+                (for [entry (take 20 catalog-hits)]
+                  ($ :li.character-sheet-list-item
+                    {:key (str (:kind entry) "-" (:name entry))}
+                    ($ :.character-sheet-summary
+                      ($ :div
+                        ($ :strong (:name entry))
+                        ($ :p (name (:kind entry))))
+                      (when editing-id
+                        ($ :button.button.button-neutral
+                          {:type "button"
+                           :on-click
+                           #(do
+                              (dispatch :character-sheets/apply-catalog editing-id entry)
+                              (set-catalog-msg (str "Applied " (:name entry))))}
+                          "Apply to open sheet"))))))))))
+      ($ :fieldset.fieldset
         ($ :legend "Character Sheets")
         (if (empty? sheets)
           ($ :p.form-notice
@@ -589,7 +933,7 @@
                       (if editing? "Close editor" "Edit"))
                     ($ :button.button.button-neutral
                       {:type "button"
-                       :on-click #(open-sheet-popout! data (or linked-hash ""))}
+                       :on-click #(open-sheet-popout! data (or linked-hash "") id)}
                       "Pop out")
                     ($ :button.button.button-danger
                       {:type "button"
@@ -688,5 +1032,7 @@
                   ($ :button.button.button-neutral
                     {:type "button"
                      :disabled (nil? sheet)
-                     :on-click #(open-sheet-popout! sheet (:image/hash token))}
+                     :on-click
+                     #(open-sheet-popout! sheet (:image/hash token)
+                                          (or selected-id ""))}
                     "Open linked sheet"))))))))))

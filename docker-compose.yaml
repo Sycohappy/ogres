@@ -52,7 +52,8 @@ services:
         SERVER_SOCKET_URL: "http://backend:8090/ws"
     environment:
       # Used by docker-nginx.template /play redirect (?r=…)
-      RELEASE_VERSION: "dev"
+      # Must match frontend build VERSION (see docker-compose.override.yaml → local)
+      RELEASE_VERSION: "local"
       SERVER_SOCKET_URL: "http://backend:8090/ws"
     volumes:
       - ./deploy/docker-nginx.template:/etc/nginx/templates/default.conf.template:ro

@@ -28,3 +28,7 @@ manifest.edn
 cljs-runtime
 ogres.app.js
 ogres.app.css
+
+# Private 5etools corpus — never commit WotC text
+/data/5etools/
+/data/5e.tools/

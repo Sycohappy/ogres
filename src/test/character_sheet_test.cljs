@@ -2,6 +2,7 @@
   (:require [cljs.test :refer-macros [deftest is]]
             [clojure.string :as str]
             [datascript.core :as ds :refer [transact! entity]]
+            [ogres.app.character-sheet :as sheet]
             [ogres.app.events :refer [event-tx-fn]]
             [ogres.app.initiative :as initiative]
             [ogres.app.provider.state :refer [initial-data]]
@@ -16,6 +17,30 @@
    :ac [15]
    :hp {:average 137 :formula "11d12 + 66"}
    :str 24})
+
+(def sample-v2-attack
+  {:id "warhammer-1"
+   :name "Warhammer +1"
+   :kind :attack
+   :bonus 7
+   :description "Melee Attack Roll: +7. Hit: 8 (1d8 + 4) bludgeoning."
+   :damage [{:id "1h" :count 1 :sides 8 :modifier 4 :type "bludgeoning"}
+            {:id "2h" :count 1 :sides 10 :modifier 4 :type "bludgeoning"}]})
+
+(def sample-v2-sheet
+  {:version 2
+   :name "Argamon Flamebound"
+   :identity {:name "Argamon Flamebound" :class "Paladin" :level 6}
+   :vitals {:ac {:value 21 :from ["Plate"]}
+            :hp {:max 64 :formula "6d10+30"}
+            :initiative {:bonus 1}
+            :proficiencyBonus 3}
+   :abilities {:str {:score 17 :modifier 3 :save 6 :proficient false}
+               :dex {:score 12 :modifier 1 :save 1 :proficient false}
+               :cha {:score 16 :modifier 3 :save 9 :proficient true}}
+   :attacks [sample-v2-attack]
+   :resources [{:id "lay-on-hands" :name "Lay on Hands" :kind "pool" :max 25 :recharge "long-rest"}]
+   :runtime {:hp {:current 64 :temp 0} :resourceSpent {} :slotsExpended {} :effects []}})
 
 (deftest test-attack-modifier
   (is (= 11 (initiative/attack-modifier "*Melee Attack Roll:* +11, reach 5 ft.")))
@@ -127,7 +152,47 @@
                         (entity @conn [:db/ident :root])))]
       (is (string? (:character-sheet/id sheet)))
       (is (= "New Character" (:character-sheet/name sheet)))
-      (is (= {:name "New Character"} (:character-sheet/data sheet))))))
+      (is (sheet/v2? (:character-sheet/data sheet)))
+      (is (= "New Character" (get-in sheet [:character-sheet/data :identity :name]))))))
+
+(deftest test-spend-resource-and-rest
+  (let [conn (ds/conn-from-db (initial-data true))
+        id "sheet-v2"
+        data sample-v2-sheet]
+    (transact! conn
+               [{:db/ident :root
+                 :root/character-sheets
+                 [{:character-sheet/id id
+                   :character-sheet/name "Argamon"
+                   :character-sheet/data data}]}])
+    (dispatch conn :character-sheets/spend-resource id "lay-on-hands" 5)
+    (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))]
+      (is (= 5 (sheet/resource-spent sheet "lay-on-hands")))
+      (is (= 20 (sheet/resource-remaining sheet "lay-on-hands"))))
+    (dispatch conn :character-sheets/rest id :long-rest)
+    (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))]
+      (is (= 0 (sheet/resource-spent sheet "lay-on-hands")))
+      (is (= 64 (get-in sheet [:runtime :hp :current]))))))
+
+(deftest test-add-effect-ticks-on-round
+  (let [conn (ds/conn-from-db (initial-data true))
+        id "sheet-fx"
+        data (assoc-in sample-v2-sheet [:runtime :effects]
+                       [{:id "e1" :name "Bless" :rounds-remaining 2 :concentration true}])]
+    (transact! conn
+               [{:db/ident :root
+                 :root/character-sheets
+                 [{:character-sheet/id id
+                   :character-sheet/name "Argamon"
+                   :character-sheet/data data}]}])
+    (let [user (entity @conn [:db/ident :user])
+          scene (:camera/scene (:user/camera user))]
+      (transact! conn [{:db/id (:db/id scene) :initiative/rounds 1}])
+      (dispatch conn :initiative/next)
+      (let [sheet (:character-sheet/data (entity @conn [:character-sheet/id id]))
+            fx (get-in sheet [:runtime :effects])]
+        (is (= 1 (count fx)))
+        (is (= 1 (:rounds-remaining (first fx))))))))
 
 (deftest test-update-character-sheet-refreshes-linked-copies
   (let [conn (ds/conn-from-db (initial-data true))
@@ -216,3 +281,40 @@
                   (:camera/scene (:user/camera (entity @conn [:db/ident :user]))))]
       (is (= 2 (count tokens)))
       (is (every? #(= sheet (:token/character-sheet %)) tokens)))))
+
+(deftest test-v2-adapter-basics
+  (is (sheet/v2? sample-v2-sheet))
+  (is (not (sheet/v2? sample-sheet)))
+  (is (= "Argamon Flamebound" (sheet/sheet-name sample-v2-sheet)))
+  (is (= 21 (sheet/ac-value sample-v2-sheet)))
+  (is (= 64 (sheet/hp-max sample-v2-sheet)))
+  (is (= 17 (sheet/ability-score sample-v2-sheet :str)))
+  (is (= 1 (sheet/initiative-bonus sample-v2-sheet)))
+  (is (= 1 (count (sheet/attacks sample-v2-sheet))))
+  (is (= 2 (count (sheet/damage-options sample-v2-attack)))))
+
+(deftest test-structured-damage-dual-read
+  (let [body (sheet/attack-chat-body sample-v2-attack)
+        structured (sheet/damage-options sample-v2-attack)
+        exprs (initiative/damage-expressions body structured)]
+    (is (str/includes? body "Warhammer +1"))
+    (is (re-find #"— \d+ \(d20 \+7\)$" body))
+    (is (= 2 (count exprs)))
+    (is (= 8 (:sides (first exprs))))
+    (is (= 10 (:sides (second exprs))))
+    (let [one-hand (initiative/damage-chat-body body 0 structured)
+          two-hand (initiative/damage-chat-body body 1 structured)]
+      (is (re-find #"1d8\+4:" one-hand))
+      (is (re-find #"1d10\+4:" two-hand)))))
+
+(deftest test-convert-v1-to-v2
+  (let [v2 (sheet/convert-v1->v2 sample-sheet)]
+    (is (sheet/v2? v2))
+    (is (= "Abominable Yeti" (sheet/sheet-name v2)))
+    (is (= 15 (sheet/ac-value v2)))
+    (is (= 137 (sheet/hp-max v2)))
+    (is (= 24 (sheet/ability-score v2 :str)))))
+
+(deftest test-v2-initiative-modifier
+  (is (= 1 (initiative/modifier-from-sheet sample-v2-sheet)))
+  (is (= 1 (initiative/modifier-from-sheet {:dex 12}))))

@@ -155,14 +155,21 @@
         sheet (first sheets)]
     (is valid?)
     (is (= "ARGAMON FLAMEBOUND" (:name sheet)))
+    (is (= 2 (:version sheet)))
+    (is (= 21 (get-in sheet [:vitals :ac :value])))
     (is (= [21] (:ac sheet)))
+    (is (= 64 (get-in sheet [:vitals :hp :max])))
     (is (= 64 (get-in sheet [:hp :average])))
     (is (= "5d10" (get-in sheet [:hp :formula])))
     (is (= 17 (:str sheet)))
+    (is (= 17 (get-in sheet [:abilities :str :score])))
     (is (= 12 (:dex sheet)))
     (is (= "+1" (get-in sheet [:initiative :bonus])))
+    (is (= 1 (get-in sheet [:vitals :initiative :bonus])))
     (is (= 30 (:walk (:speed sheet))))
-    (is (<= 4 (count (:action sheet))))))
+    (is (pos? (count (:attacks sheet))))
+    (is (nil? (some #(re-find #"(?i)bonus action\)\s*$" (:name %)) (:action sheet))))
+    (is (<= 1 (count (:action sheet))))))
 
 (deftest test-parse-roll20-pdf-text
   (let [pdf-text (str/join "\n\n" (str/split-lines sample-roll20))

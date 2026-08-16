@@ -370,6 +370,7 @@
                  :root/token-images [{:image/hash "tok" :image/name "t.png"}]}
                 {:db/id -10
                  :object/type :token/token
+                 :object/point (Vec2. 100 100)
                  :token/label "Test"
                  :token/character-sheet sheet
                  :token/image [:image/hash "tok"]}
@@ -420,3 +421,19 @@
 (deftest test-v2-initiative-modifier
   (is (= 1 (initiative/modifier-from-sheet sample-v2-sheet)))
   (is (= 1 (initiative/modifier-from-sheet {:dex 12}))))
+
+(deftest test-spell-chat-formatting
+  (let [block {:dc 14 :attackBonus 6}
+        smite {:name "Wrathful Smite"
+               :savingThrow ["wisdom"]
+               :entries ["extra damage"]
+               :damage [{:count 1 :sides 6 :modifier 0 :type "psychic"}]}
+        weapon {:name "Spiritual Weapon"
+                :spellAttack true
+                :entries ["force weapon"]
+                :damage [{:count 1 :sides 8 :modifier 0 :type "force"}]}]
+    (is (= "WIS 14" (sheet/format-spell-hit-dc smite block)))
+    (is (= "+6 Attack" (sheet/format-spell-hit-dc weapon block)))
+    (is (str/includes? (sheet/format-spell-description smite block) "DC 14 WIS"))
+    (is (str/includes? (sheet/format-spell-description smite block) "(1d6) psychic"))
+    (is (str/includes? (sheet/format-spell-description weapon block) "Spell Attack Roll: +6"))))

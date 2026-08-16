@@ -360,6 +360,59 @@
                        ")\"></button>")))
          "</div>")))
 
+(defn ^:private catalog-spell-by-name [spell-name]
+  (let [want (str/lower-case (str spell-name))]
+    (some (fn [entry]
+            (when (and (= :spell (:kind entry))
+                       (= want (str/lower-case (str (:name entry)))))
+              (:v2 entry)))
+          (catalog/catalog))))
+
+(defn ^:private resolve-spell [sheet spell-name]
+  (or (sheet/find-spell sheet spell-name)
+      (catalog-spell-by-name spell-name)
+      {:name spell-name :level nil :entries []}))
+
+(defn ^:private spell-level-num [level spell-name spell]
+  (or (when (number? (:level spell)) (:level spell))
+      (when-let [n (js/Number.parseInt (str level) 10)]
+        (when-not (js/Number.isNaN n) n))
+      0))
+
+(defn ^:private render-spell-row [spell-name spell block spell-idx]
+  (let [name (or (:name spell) spell-name)
+        range (or (:range spell) "—")
+        hit-dc (or (sheet/format-spell-hit-dc spell block) "—")
+        dmg (when (seq (:damage spell))
+              (str/join " / " (map sheet/format-damage-option (:damage spell))))
+        conc? (:concentration spell)
+        meta (->> [(when (:time spell) (:time spell))
+                   (when (:school spell) (:school spell))
+                   (when (:components spell) (:components spell))]
+                  (remove nil?)
+                  (str/join " · "))]
+    (str "<div class=\"attack-row spell-row\">"
+         "<div>"
+         "<button type=\"button\" class=\"name\" title=\"Cast: send to chat"
+         (when (pos? (or (:level spell) 0)) " and expend a slot")
+         "\" onclick=\"ogresCastSpell(" spell-idx ")\">"
+         (escape-html name) "</button>"
+         (when (seq meta)
+           (str "<div class=\"muted\" style=\"font-size:11px;margin-top:2px\">"
+                (escape-html meta) "</div>"))
+         (when (seq (:entries spell))
+           (str "<details class=\"spell-detail\"><summary class=\"muted\">Details</summary>"
+                "<p class=\"muted\" style=\"margin:6px 0 0;white-space:pre-wrap;font-size:12px\">"
+                (escape-html (str/join "\n\n" (:entries spell)))
+                "</p></details>"))
+         "</div>"
+         "<span class=\"muted\">" (escape-html range)
+         (when conc? " <span class=\"conc\" title=\"Concentration\">C</span>")
+         "</span>"
+         "<span class=\"hit-dc\">" (escape-html hit-dc) "</span>"
+         "<span class=\"dmg\">" (escape-html (or dmg "—")) "</span>"
+         "</div>")))
+
 (defn ^:private prepared-entries [block]
   (let [prepared (or (:prepared block) {})]
     (->> prepared
@@ -414,6 +467,23 @@
                (filter #(contains? #{:action :bonus :reaction :free}
                                    (keyword (:economy %)))
                        features))))
+        castable-spells
+        (vec
+         (mapcat
+          (fn [block]
+            (mapcat
+             (fn [[lvl spells]]
+               (map (fn [spell-name]
+                      (let [spell (resolve-spell s spell-name)
+                            level (spell-level-num lvl spell-name spell)]
+                        {:name (or (:name spell) spell-name)
+                         :level level
+                         :description (sheet/format-spell-description spell block)
+                         :bonus (when (:spellAttack spell) (:attackBonus block))
+                         :damage (:damage spell)}))
+                    spells))
+             (prepared-entries block)))
+          spellcasting))
         sheet-id-js (escape-js-string (or sheet-id ""))]
     (str "<!doctype html><html><head><meta charset=\"utf-8\"/>"
          "<title>" (escape-html title) "</title>"
@@ -444,8 +514,13 @@
          ".tab{background:#12141a;border:1px solid #2a2e38;color:#aaa;border-radius:6px 6px 0 0;padding:6px 10px;cursor:pointer;font:inherit}"
          ".tab.active{background:#222632;color:#fff;border-bottom-color:#222632}"
          ".tab-panel{display:none}.tab-panel.active{display:block}"
-         ".attack-row,.feature-row{display:grid;grid-template-columns:1.2fr .6fr .8fr 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #252833;font-size:13px;align-items:start}"
+         ".attack-row,.feature-row{display:grid;grid-template-columns:1.4fr .7fr .7fr 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #252833;font-size:13px;align-items:start}"
          ".attack-row .name,.feature-row .name{font-weight:700;color:#fff}"
+         ".attack-row:hover,.spell-row:hover{background:#1e222c}"
+         ".spell-cols{display:grid;grid-template-columns:1.4fr .7fr .7fr 1fr;gap:8px;padding:4px 0;font-size:11px;color:#9aa0ad;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #2a2e38}"
+         ".spell-detail{margin-top:4px}.spell-detail summary{cursor:pointer}"
+         ".conc{display:inline-block;margin-left:4px;padding:0 4px;border:1px solid #9aa0ad;border-radius:3px;font-size:10px;font-weight:700}"
+         ".hit-dc{color:#f0d78c}"
          ".muted{color:#9aa0ad}"
          ".dmg{color:#d4a84b}"
          ".hp-block{text-align:center}"
@@ -574,26 +649,35 @@
          "</div>"
          "<div class=\"tab-panel\" data-panel=\"spells\">"
          (if (seq spellcasting)
-           (apply str
-                  (for [block spellcasting]
-                    (str "<div class=\"section-label\">" (escape-html (or (:name block) "Spellcasting")) "</div>"
-                         (when (:dc block)
-                           (str "<p class=\"muted\">DC " (:dc block)
-                                (when (:attackBonus block) (str " · Attack +" (:attackBonus block)))
-                                "</p>"))
-                         (let [slot-rows (slots-entries block)]
-                           (when (seq slot-rows)
-                             (str "<div class=\"slot-trackers\" style=\"margin:8px 0 12px\">"
-                                  (apply str
-                                         (for [[lvl max-n] slot-rows]
-                                           (render-slot-widget
-                                            lvl max-n (sheet/slots-expended s lvl))))
-                                  "</div>")))
-                         (apply str
-                                (for [[lvl spells] (prepared-entries block)]
-                                  (str "<p><strong>Level " (escape-html lvl) ":</strong> "
-                                       (escape-html (str/join ", " spells))
-                                       "</p>"))))))
+           (let [spell-idx (atom 0)]
+             (apply str
+                    (for [block spellcasting]
+                      (str "<div class=\"section-label\">" (escape-html (or (:name block) "Spellcasting")) "</div>"
+                           (when (:dc block)
+                             (str "<p class=\"muted\">DC " (:dc block)
+                                  (when (:attackBonus block) (str " · Attack +" (:attackBonus block)))
+                                  "</p>"))
+                           (let [slot-rows (slots-entries block)]
+                             (when (seq slot-rows)
+                               (str "<div class=\"slot-trackers\" style=\"margin:8px 0 12px\">"
+                                    (apply str
+                                           (for [[lvl max-n] slot-rows]
+                                             (render-slot-widget
+                                              lvl max-n (sheet/slots-expended s lvl))))
+                                    "</div>")))
+                           (when (seq (prepared-entries block))
+                             (str "<div class=\"spell-cols\"><span>Name</span><span>Range</span><span>Hit / DC</span><span>Damage</span></div>"))
+                           (apply str
+                                  (for [[lvl spells] (prepared-entries block)]
+                                    (str "<div class=\"section-label\" style=\"margin-top:12px\">"
+                                         (if (= lvl "0") "Cantrips" (str "Level " (escape-html lvl)))
+                                         "</div>"
+                                         (apply str
+                                                (for [spell-name spells
+                                                      :let [i @spell-idx
+                                                            _ (swap! spell-idx inc)
+                                                            spell (resolve-spell s spell-name)]]
+                                                  (render-spell-row spell-name spell block i))))))))))
            "<p class=\"muted\">No spellcasting data.</p>")
          "</div>"
          "<div class=\"tab-panel\" data-panel=\"inventory\">"
@@ -671,8 +755,13 @@
          "window.ogresSheetId=\"" sheet-id-js "\";"
          "window.ogresImageHash=\"" (escape-js-string image-hash) "\";"
          "window.ogresActions=" (.stringify js/JSON (clj->js clickable)) ";"
+         "window.ogresSpells=" (.stringify js/JSON (clj->js castable-spells)) ";"
          "function post(msg){if(!window.opener)return;msg.popupId=window.ogresPopupId;msg.sheetId=window.ogresSheetId;window.opener.postMessage(msg,window.location.origin);}"
          "window.ogresPostAction=function(idx){var action=window.ogresActions[idx];if(!action)return;post({type:\"ogres:chat-action\",name:action.name,description:action.description||\"\",bonus:action.bonus||null,damage:action.damage||null});};"
+         "window.ogresCastSpell=function(idx){var spell=window.ogresSpells[idx];if(!spell)return;"
+         "post({type:\"ogres:chat-action\",name:spell.name,description:spell.description||\"\",bonus:spell.bonus||null,damage:spell.damage||null});"
+         "if(spell.level>0){post({type:\"ogres:expend-slot\",level:String(spell.level),amount:1});}"
+         "};"
          "window.ogresPostNamedAction=window.ogresPostAction;"
          "window.ogresAbilityRoll=function(ability,score){post({type:\"ogres:ability-roll\",ability:ability,score:score});};"
          "window.ogresSaveRoll=function(ability,mod){post({type:\"ogres:skill-roll\",label:ability+\" Save\",modifier:mod});};"
@@ -945,6 +1034,17 @@
            (if (seq names)
              (str "Imported " count " sheet(s): " (str/join ", " names))
              (str "Imported " count " sheet(s)."))))) []))
+    (hooks/use-subscribe
+     :import/catalog
+     (uix/use-callback
+      (fn [result]
+        (set-import-error nil)
+        (set-import-success nil)
+        (set-catalog-msg
+         (str "Loaded catalog from " (:source result)
+              " (" (:added result) " entries"
+              (when (:merged result) ", merged")
+              "). Search below and Apply to an open sheet."))) []))
     ($ :.form-help
       ($ :header ($ :h2 "Characters"))
       ($ :fieldset.fieldset.character-management-import
@@ -983,7 +1083,7 @@
         ($ :legend "5etools Catalog (private)")
         ($ :div.form-notice
           ($ :p
-            "Import privately obtained 5etools JSON (classFeature/item/spell/race). Kept in memory only — do not commit WotC text to git.")
+            "Import privately obtained 5etools JSON (classFeature/item/spell/race). Multiple files merge in memory — do not commit WotC text to git.")
           ($ :.character-management-actions
             ($ :button.button.button-neutral
               {:type "button"
@@ -997,43 +1097,65 @@
             {:type "file"
              :hidden true
              :accept ".json"
+             :multiple true
              :ref catalog-input
              :on-change
              (fn [event]
-               (let [file (aget (.. event -target -files) 0)]
-                 (when file
-                   (let [reader (js/FileReader.)]
-                     (set! (.-onload reader)
-                           (fn [e]
-                             (try
-                               (let [parsed (js->clj (js/JSON.parse (.. e -target -result))
-                                                     :keywordize-keys true)
-                                     result (catalog/load-data! parsed (.-name file))]
-                                 (set-catalog-msg
-                                  (str "Loaded " (:count result) " catalog entries from "
-                                       (:source result))))
-                               (catch :default err
-                                 (set-catalog-msg (str "Catalog import failed: " (.-message err)))))))
-                     (.readAsText reader file)))
+               (let [files (vec (array-seq (.. event -target -files)))]
+                 (when (seq files)
+                   (letfn [(read-next! [idx merge? loaded]
+                             (if (>= idx (count files))
+                               (set-catalog-msg
+                                (str "Loaded " (count (catalog/catalog))
+                                     " catalog entries from "
+                                     (str/join ", " loaded)))
+                               (let [file (nth files idx)
+                                     reader (js/FileReader.)]
+                                 (set! (.-onload reader)
+                                       (fn [e]
+                                         (try
+                                           (let [parsed (js->clj (js/JSON.parse (.. e -target -result))
+                                                                 :keywordize-keys true)
+                                                 _ (catalog/load-data! parsed (.-name file) merge?)]
+                                             (read-next! (inc idx) true (conj loaded (.-name file))))
+                                           (catch :default err
+                                             (set-catalog-msg
+                                              (str "Catalog import failed on " (.-name file)
+                                                   ": " (.-message err)))))))
+                                 (set! (.-onerror reader)
+                                       (fn [_]
+                                         (set-catalog-msg
+                                          (str "Could not read " (.-name file)))))
+                                 (.readAsText reader file))))]
+                     (read-next! 0 (seq (catalog/catalog)) [])))
                  (set! (.. event -target -value) "")))})
           (when catalog-msg
             ($ :p.character-management-message catalog-msg))
           (when (seq (catalog/catalog))
             ($ :div
+              ($ :p.muted
+                (str (count (catalog/catalog)) " entries"
+                     (when (seq (catalog/sources))
+                       (str " · " (str/join ", " (catalog/sources))))))
               ($ :input.text
                 {:type "text"
-                 :placeholder "Search catalog…"
+                 :placeholder "Search catalog (try spell names)…"
                  :value catalog-query
                  :on-change #(set-catalog-query (.. % -target -value))
                  :style {:width "100%" :margin "8px 0"}})
               ($ :ul.character-sheet-list
                 (for [entry (take 20 catalog-hits)]
                   ($ :li.character-sheet-list-item
-                    {:key (str (:kind entry) "-" (:name entry))}
+                    {:key (str (:kind entry) "-" (:name entry)
+                               "-" (get-in entry [:v2 :source]))}
                     ($ :.character-sheet-summary
                       ($ :div
                         ($ :strong (:name entry))
-                        ($ :p (name (:kind entry))))
+                        ($ :p
+                          (str (name (:kind entry))
+                               (when (and (= (:kind entry) :spell)
+                                          (number? (:level entry)))
+                                 (str " · L" (:level entry))))))
                       (when editing-id
                         ($ :button.button.button-neutral
                           {:type "button"

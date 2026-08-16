@@ -375,6 +375,80 @@
   [sheet]
   (vec (or (:spellcasting sheet) [])))
 
+(defn spell-index
+  "Map of spell id → spell details (from catalog apply)."
+  [sheet]
+  (or (:spellIndex sheet) {}))
+
+(defn find-spell
+  "Look up a prepared spell name/id in the sheet spell index."
+  [sheet name-or-id]
+  (let [idx (spell-index sheet)
+        key (str/lower-case (str/replace (str name-or-id) #"\s+" "-"))
+        want (str/lower-case (str name-or-id))]
+    (or (get idx key)
+        (some (fn [[_ spell]]
+                (when (= want (str/lower-case (str (:name spell))))
+                  spell))
+              idx))))
+
+(defn ^:private abbrev-ability [ability]
+  (let [s (str/lower-case (str ability))]
+    (or (get {"strength" "STR" "dexterity" "DEX" "constitution" "CON"
+              "intelligence" "INT" "wisdom" "WIS" "charisma" "CHA"
+              "str" "STR" "dex" "DEX" "con" "CON"
+              "int" "INT" "wis" "WIS" "cha" "CHA"} s)
+        (str/upper-case (subs s 0 (min 3 (count s)))))))
+
+(defn format-spell-hit-dc
+  "Roll20-style Hit/DC cell: '+6 Attack' or 'WIS 14'."
+  [spell block]
+  (let [dc (:dc block)
+        atk (:attackBonus block)
+        saves (or (:savingThrow spell) [])]
+    (cond
+      (and (:spellAttack spell) (number? atk)) (str "+" atk " Attack")
+      (and (seq saves) (number? dc))
+      (str (abbrev-ability (first saves)) " " dc)
+      (number? atk) (str "+" atk " Attack")
+      (number? dc) (str "DC " dc)
+      :else nil)))
+
+(defn format-spell-description
+  "Chat body for casting a spell — includes attack/save keywords for damage buttons."
+  [spell block]
+  (let [name (or (:name spell) "Spell")
+        body (str/join " " (or (:entries spell) []))
+        dc (:dc block)
+        atk (:attackBonus block)
+        saves (or (:savingThrow spell) [])
+        dmgs (or (:damage spell) [])
+        atk-line (when (and (:spellAttack spell) (number? atk))
+                   (str "Spell Attack Roll: +" atk ", one target."))
+        save-line (when (and (seq saves) (number? dc))
+                    (str "DC " dc " " (str/join "/" (map abbrev-ability saves))
+                         " saving throw."))
+        hit-line
+        (when (seq dmgs)
+          (str "Hit: "
+               (str/join ", "
+                         (map (fn [d]
+                                (let [c (or (:count d) 1)
+                                      s (or (:sides d) 6)
+                                      m (or (:modifier d) 0)
+                                      avg (js/Math.round
+                                           (+ m (* c (/ (inc s) 2))))]
+                                  (str avg " (" c "d" s
+                                       (when (pos? m) (str " + " m))
+                                       ")"
+                                       (when (:type d) (str " " (:type d)))
+                                       " damage")))
+                              dmgs))))
+        parts (->> [body atk-line save-line hit-line]
+                   (remove str/blank?)
+                   (str/join " "))]
+    (if (str/blank? parts) name parts)))
+
 (defn spell-slots-map
   "Map of level string → max slots, merged across spellcasting blocks."
   [sheet]

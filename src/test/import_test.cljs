@@ -88,6 +88,14 @@
     (is (= "Aura" (get-in sheet [:trait 0 :name])))
     (is (= "Allies gain +3." (first (get-in sheet [:trait 0 :entries]))))))
 
+(deftest test-parse-json-rejects-5etools-catalog
+  (let [json "{\"spell\":[{\"name\":\"Bless\",\"level\":1,\"entries\":[\"Bless creatures.\"]}]}"
+        result (parser/parse-json-text json)]
+    (is (not (:valid? result)))
+    (is (map? (:catalog result)))
+    (is (parser/five-etools-catalog? (:catalog result)))
+    (is (str/includes? (first (:errors result)) "catalog"))))
+
 (def ^:private sample-roll20
   (str/join "\n"
             ["ARGAMON FLAMEBOUND"
@@ -325,7 +333,7 @@
                       (get-in block [:spells "1" :spells]))]
     (is (= "Garuun" (:name sheet)))
     (is (= "Spellcasting" (:name block)))
-    (is (= :wis (:ability block)))
+    (is (= "wis" (:ability block)))
     (is (= ["Guidance" "Druidcraft"] cantrips))
     (is (= 4 (or (get-in block [:spells :1 :slots])
                  (get-in block [:spells "1" :slots]))))

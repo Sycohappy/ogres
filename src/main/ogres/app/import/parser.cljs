@@ -155,6 +155,7 @@
         (:vulnerable stats) (assoc :vulnerable (:vulnerable stats))
         (:languages stats) (assoc :languages (:languages stats))
         (:cr stats) (assoc :cr (:cr stats))
+        (:proficiency-bonus stats) (assoc :proficiency-bonus (:proficiency-bonus stats))
         (:environment stats) (assoc :environment (:environment stats))
         (:treasure stats) (assoc :treasure (:treasure stats))
         (seq trait-entries) (assoc :trait trait-entries)
@@ -702,7 +703,8 @@
         (seq abilities) (merge abilities)
         class (assoc :type (str/lower-case class))
         species (assoc :subtype species)
-        (seq (:action economy)) (assoc :action (vec (concat (:attacks economy) (:action economy))))
+        (or (seq (:attacks economy)) (seq (:action economy)))
+        (assoc :action (vec (concat (:attacks economy) (:action economy))))
         (seq (:bonus economy)) (assoc :bonus (:bonus economy))
         (seq (:reaction economy)) (assoc :reaction (:reaction economy))))))
 
@@ -1269,20 +1271,38 @@
     (map? parsed) [parsed]
     :else []))
 
+(defn five-etools-catalog?
+  "True when JSON looks like a 5etools data blob (spells/items/features), not a sheet."
+  [parsed]
+  (and (map? parsed)
+       (or (sequential? (:spell parsed))
+           (sequential? (:spells parsed))
+           (sequential? (:item parsed))
+           (sequential? (:items parsed))
+           (sequential? (:classFeature parsed))
+           (sequential? (:classFeatures parsed))
+           (sequential? (:race parsed))
+           (sequential? (:races parsed)))))
+
 (defn parse-json-text [text]
   (try
-    (let [parsed (js->clj (js/JSON.parse text) :keywordize-keys true)
-          sheets (json-sheets parsed)
-          results (mapv validate-sheet sheets)]
-      (cond
-        (empty? sheets)
-        {:valid? false :sheets [] :errors ["JSON must be an object or array of character sheets"]}
+    (let [parsed (js->clj (js/JSON.parse text) :keywordize-keys true)]
+      (if (five-etools-catalog? parsed)
+        {:valid? false
+         :sheets []
+         :catalog parsed
+         :errors ["This is a 5etools catalog file (spells/items/…). Use “Import catalog JSON” below, not Import sheets."]}
+        (let [sheets (json-sheets parsed)
+              results (mapv validate-sheet sheets)]
+          (cond
+            (empty? sheets)
+            {:valid? false :sheets [] :errors ["JSON must be an object or array of character sheets"]}
 
-        (every? :valid? results)
-        {:valid? true :sheets (mapv :sheet results) :errors []}
+            (every? :valid? results)
+            {:valid? true :sheets (mapv :sheet results) :errors []}
 
-        :else
-        {:valid? false :sheets [] :errors (mapcat :errors results)}))
+            :else
+            {:valid? false :sheets [] :errors (mapcat :errors results)}))))
     (catch :default e
       {:valid? false :sheets [] :errors [(.-message e)]})))
 

@@ -127,7 +127,9 @@
   "Chat replicates over :chat/message; omit from :tx sync."
   [tx-data]
   (when (seq tx-data)
-    (vec (remove chat-tx-entry? tx-data))))
+    (let [filtered (vec (remove chat-tx-entry? tx-data))]
+      (when (seq filtered)
+        filtered))))
 
 (defn sanitize-transaction
   "Removes nil chat attribute values from transaction data."

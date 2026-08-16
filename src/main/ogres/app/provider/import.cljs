@@ -1,5 +1,6 @@
 (ns ogres.app.provider.import
   (:require [clojure.string :as str]
+            [ogres.app.catalog.core :as catalog]
             [ogres.app.import.parser :as parser]
             [ogres.app.provider.dispatch :as dispatch]
             [ogres.app.provider.events :as events]
@@ -173,8 +174,24 @@
        (doseq [file (array-seq files)]
          (-> (process-file file)
              (.then
-              (fn [{:keys [valid? sheets errors]}]
-                (if valid?
+              (fn [{:keys [valid? sheets errors catalog]}]
+                (cond
+                  catalog
+                  (try
+                    (let [merge? (seq (catalog/catalog))
+                          result (catalog/load-data! catalog (.-name file) (boolean merge?))]
+                      (debug-log "catalog auto-loaded" (.-name file)
+                                 #js {:count (:count result) :merged (:merged result)})
+                      (publish :import/catalog
+                               {:count (:count result)
+                                :added (:added result)
+                                :source (.-name file)
+                                :merged (:merged result)}))
+                    (catch :default e
+                      (debug-log "catalog load error" (.-name file) (.-message e))
+                      (publish :import/error (.-message e) (.-name file))))
+
+                  valid?
                   (do (debug-log "dispatching import"
                                  (.-name file)
                                  #js {:sheet-count (count sheets)
@@ -187,6 +204,8 @@
                         (catch :default e
                           (debug-log "dispatch error" (.-name file) (.-message e))
                           (publish :import/error (.-message e) (.-name file)))))
+
+                  :else
                   (do (debug-log "import failed" (.-name file) (first errors))
                       (publish :import/error (first errors) (.-name file))))))
              (.catch

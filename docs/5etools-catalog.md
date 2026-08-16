@@ -7,15 +7,25 @@ mkdir -p ~/data/5etools
 # Clone or copy only the `data/` tree from a local 5etools mirror you already own access to.
 # Example layout:
 #   ~/data/5etools/data/class/...
-#   ~/data/5etools/data/spells/...
+#   ~/data/5etools/data/spells/spells-phb.json
+#   ~/data/5etools/data/spells/spells-xge.json
 #   ~/data/5etools/data/items.json
 ```
 
 ## Using the catalog in Ogres
 
 1. Open Characters panel → **Import catalog JSON**.
-2. Select a 5etools-shaped JSON file (object with `classFeature` / `item` / `spell` / `race` arrays).
-3. Open a sheet in the editor, search the catalog, click **Apply to open sheet**.
+2. Select one or more 5etools-shaped JSON files (objects with `classFeature` / `item` / `spell` / `race` arrays). Spell books are typically under `data/spells/spells-*.json`.
+3. Additional imports **merge** into the in-memory catalog (same source id replaces). Use **Clear catalog** to start over.
+4. Open a sheet in the editor, search the catalog, click **Apply to open sheet**.
+
+### Spells
+
+Applying a spell:
+
+- Upserts full details into the sheet `:spellIndex` (school, time, range, components, duration, concentration/ritual, entries).
+- Appends the spell **name** to `spellcasting[0].prepared[level]` (deduped).
+- The Spells tab renders expandable details from `:spellIndex` when present.
 
 Catalog entries are stored in browser memory only for the session.
 

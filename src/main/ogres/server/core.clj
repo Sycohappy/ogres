@@ -58,13 +58,22 @@
       (update-in [:rooms room :conns] conj uuid)))
 
 (defn room-leave [data uuid]
-  (let [room (get-in data [:conns uuid :room])]
-    (if-let [host (get-in data [:rooms room :host])]
-      (cond-> data
-        true             (update :conns dissoc uuid)
-        (= uuid host)    (update :rooms dissoc room)
-        (not= uuid host) (update-in [:rooms room :conns] disj uuid))
-      (update data :conns dissoc uuid))))
+  (let [room (get-in data [:conns uuid :room])
+        host (get-in data [:rooms room :host])]
+    (cond (nil? host)
+          (update data :conns dissoc uuid)
+
+          ;; The host has left; forget every member of the room so that late
+          ;; close events from its players cannot reach a new room that has
+          ;; since been created with the same code.
+          (= uuid host)
+          (-> (apply update data :conns dissoc uuid (get-in data [:rooms room :conns]))
+              (update :rooms dissoc room))
+
+          :else
+          (-> data
+              (update :conns dissoc uuid)
+              (update-in [:rooms room :conns] disj uuid)))))
 
 (defn uuid->room [data uuid]
   (let [room (get-in data [:conns uuid :room])]

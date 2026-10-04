@@ -67,9 +67,13 @@
       (update-in [:rooms room] assoc :conns #{uuid} :host uuid)))
 
 (defn room-join [data room uuid session]
-  (-> data
-      (update-in [:conns uuid] assoc :session session :room room)
-      (update-in [:rooms room :conns] conj uuid)))
+  ;; The room may have closed between the upgrade check and the socket
+  ;; opening; joining it then would create a room without a host.
+  (if (get-in data [:rooms room :host])
+    (-> data
+        (update-in [:conns uuid] assoc :session session :room room)
+        (update-in [:rooms room :conns] conj uuid))
+    data))
 
 (defn room-leave [data uuid]
   (let [room (get-in data [:conns uuid :room])
@@ -238,8 +242,10 @@
               (send session {:type :event :src uuid :dst uuid :data {:name :session/created :room host :uuid uuid}}))
           (some? join)
           (let [data (swap! state! room-join join uuid session)]
-            (send session {:type :event :src uuid :dst uuid :data {:name :session/joined :room join :uuid uuid}})
-            (send-many (uuid->conns data uuid) {:type :event :src uuid :data {:name :session/join :room join :uuid uuid}}))
+            (if (contains? (:conns data) uuid)
+              (do (send session {:type :event :src uuid :dst uuid :data {:name :session/joined :room join :uuid uuid}})
+                  (send-many (uuid->conns data uuid) {:type :event :src uuid :data {:name :session/join :room join :uuid uuid}}))
+              (close-async! session "room closed")))
           :else
           (let [room (room-create-key)]
             (swap! state! room-create room uuid session)

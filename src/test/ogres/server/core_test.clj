@@ -43,6 +43,15 @@
     (is (= #{"host"} (get-in left [:rooms "ABCD" :conns])))
     (is (nil? (get-in left [:conns "p1"])))))
 
+(deftest room-join-after-room-closed-is-ignored
+  (let [data (-> {}
+                 (core/room-create "ABCD" "old-host" :old-session)
+                 (core/room-leave "old-host")
+                 (core/room-join "ABCD" "p1" :p1-session)
+                 (core/room-create "ABCD" "new-host" :new-session))]
+    (is (= {"ABCD" {:conns #{"new-host"} :host "new-host"}} (:rooms data)))
+    (is (nil? (get-in data [:conns "p1"])))))
+
 (deftest late-player-close-does-not-touch-recreated-room
   (let [data (-> {}
                  (core/room-create "ABCD" "old-host" :old-session)

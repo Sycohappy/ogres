@@ -62,9 +62,13 @@
         (if (contains? keys code) (recur) code)))))
 
 (defn room-create [data room uuid session]
-  (-> data
-      (update-in [:conns uuid] assoc :session session :room room)
-      (update-in [:rooms room] assoc :conns #{uuid} :host uuid)))
+  ;; Concurrent requests for the same room code can all pass the upgrade
+  ;; check; only the first to open becomes its host.
+  (if (get-in data [:rooms room :host])
+    data
+    (-> data
+        (update-in [:conns uuid] assoc :session session :room room)
+        (update-in [:rooms room] assoc :conns #{uuid} :host uuid))))
 
 (defn room-join [data room uuid session]
   ;; The room may have closed between the upgrade check and the socket
@@ -238,8 +242,10 @@
      (reify MessageHandler$Whole
        (onMessage [_ _] (touch! uuid))))
     (cond (some? host)
-          (do (swap! state! room-create host uuid session)
-              (send session {:type :event :src uuid :dst uuid :data {:name :session/created :room host :uuid uuid}}))
+          (let [data (swap! state! room-create host uuid session)]
+            (if (= uuid (get-in data [:rooms host :host]))
+              (send session {:type :event :src uuid :dst uuid :data {:name :session/created :room host :uuid uuid}})
+              (close-async! session "room already hosted")))
           (some? join)
           (let [data (swap! state! room-join join uuid session)]
             (if (contains? (:conns data) uuid)
@@ -247,9 +253,11 @@
                   (send-many (uuid->conns data uuid) {:type :event :src uuid :data {:name :session/join :room join :uuid uuid}}))
               (close-async! session "room closed")))
           :else
-          (let [room (room-create-key)]
-            (swap! state! room-create room uuid session)
-            (send session {:type :event :src uuid :dst uuid :data {:name :session/created :room room :uuid uuid}})))
+          (let [room (room-create-key)
+                data (swap! state! room-create room uuid session)]
+            (if (= uuid (get-in data [:rooms room :host]))
+              (send session {:type :event :src uuid :dst uuid :data {:name :session/created :room room :uuid uuid}})
+              (close-async! session "room code collision"))))
     session))
 
 (defn handle-ws-close [session _ _]

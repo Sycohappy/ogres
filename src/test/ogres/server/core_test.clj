@@ -43,6 +43,13 @@
     (is (= #{"host"} (get-in left [:rooms "ABCD" :conns])))
     (is (nil? (get-in left [:conns "p1"])))))
 
+(deftest room-create-keeps-first-host
+  (let [data (-> {}
+                 (core/room-create "ABCD" "first" :first-session)
+                 (core/room-create "ABCD" "second" :second-session))]
+    (is (= {"ABCD" {:conns #{"first"} :host "first"}} (:rooms data)))
+    (is (nil? (get-in data [:conns "second"])))))
+
 (deftest room-join-after-room-closed-is-ignored
   (let [data (-> {}
                  (core/room-create "ABCD" "old-host" :old-session)
